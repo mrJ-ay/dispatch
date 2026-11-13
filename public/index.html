@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>DISPATCH · 실시간 메신저</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="theme-light">
+  <div class="app-shell" id="appShell">
+    <!-- Left Sidebar (Telegram-style Rooms & Auth) -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-wrap">
+          <span class="brand-badge">✈</span>
+          <div>
+            <h1 class="brand-name">DISPATCH</h1>
+            <span class="brand-sub">실시간 메신저 · 파일 전송</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button type="button" class="icon-btn" id="soundToggleBtn" title="알림음 켜기/끄기">🔔</button>
+          <button type="button" class="icon-btn" id="themeToggleBtn" title="라이트/다크 테마 전환">🌙</button>
+        </div>
+      </div>
+
+      <div class="auth-panel">
+        <div class="auth-info">
+          <div class="auth-avatar" id="authAvatar">?</div>
+          <div class="auth-text">
+            <strong id="authName">게스트 모드</strong>
+            <span id="authSub">방 ID로 바로 입장 가능</span>
+          </div>
+        </div>
+        <button type="button" class="auth-btn" id="oneidAuthBtn">ONEID 로그인</button>
+      </div>
+
+      <div class="room-actions">
+        <button type="button" class="primary-btn" id="openCreateModalBtn">+ 새 대화방 만들기</button>
+        <button type="button" class="secondary-btn" id="openJoinModalBtn">방 ID로 입장</button>
+      </div>
+
+      <div class="rooms-section">
+        <div class="section-label">내 대화방 목록</div>
+        <ul class="rooms-list" id="roomsList">
+          <li class="rooms-empty">참여한 대화방이 없습니다.</li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="chat-main" id="chatMain">
+      <!-- Empty / Welcome State -->
+      <div class="chat-welcome" id="chatWelcome">
+        <div class="welcome-card">
+          <div class="welcome-icon">✈</div>
+          <h2>DISPATCH에 오신 것을 환영합니다</h2>
+          <p>비로그인 상태로 <strong>방 ID</strong>만 입력해 바로 대화하고 파일을 주고받거나, <strong>ONEID</strong>로 로그인해 인증 닉네임을 사용할 수 있습니다.</p>
+          <div class="welcome-btns">
+            <button type="button" class="primary-btn" id="welcomeCreateBtn">+ 새 방 만들기</button>
+            <button type="button" class="secondary-btn" id="welcomeJoinBtn">방 ID로 입장하기</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Chat Room -->
+      <div class="chat-active" id="chatActive" hidden>
+        <header class="chat-header">
+          <div class="chat-header-left">
+            <button type="button" class="mobile-back-btn" id="mobileBackBtn" aria-label="방 목록">←</button>
+            <div class="room-avatar" id="roomAvatar">#</div>
+            <div class="room-meta">
+              <div class="room-title-row">
+                <h2 id="roomTitle">대화방</h2>
+                <span class="room-id-pill" id="roomIdPill">#CODE</span>
+              </div>
+              <span class="room-status" id="roomStatus">접속 중 1명</span>
+            </div>
+          </div>
+          <div class="chat-header-right">
+            <button type="button" class="header-pill-btn" id="copyInviteBtn">초대 링크 복사</button>
+          </div>
+        </header>
+
+        <div class="messages-wrap" id="messagesWrap">
+          <div class="messages-list" id="messagesList"></div>
+        </div>
+
+        <div class="typing-bar" id="typingBar" hidden></div>
+
+        <!-- Reply Preview Bar -->
+        <div class="reply-preview" id="replyPreview" hidden>
+          <div class="reply-bar-accent"></div>
+          <div class="reply-preview-text">
+            <strong id="replySender"></strong>
+            <span id="replySnippet"></span>
+          </div>
+          <button type="button" class="reply-cancel" id="replyCancelBtn">&times;</button>
+        </div>
+
+        <!-- Upload Progress -->
+        <div class="upload-bar" id="uploadBar" hidden>
+          <span id="uploadText">파일 전송 중…</span>
+        </div>
+
+        <!-- Composer -->
+        <form class="composer" id="composerForm">
+          <input type="file" id="fileInput" hidden />
+          <button type="button" class="attach-btn" id="attachBtn" title="파일 첨부 (최대 15MB)">📎</button>
+          <textarea id="msgInput" rows="1" placeholder="메시지를 입력하세요… (Ctrl+V로 이미지 붙여넣기 가능)"></textarea>
+          <button type="submit" class="send-btn" id="sendBtn" title="전송">➤</button>
+        </form>
+      </div>
+
+      <!-- Drag & Drop Overlay -->
+      <div class="drop-overlay" id="dropOverlay" hidden>
+        <div class="drop-box">
+          <span>📎</span>
+          <strong>파일을 여기에 놓아 바로 전송하세요</strong>
+          <small>최대 15MB · 이미지, 문서, 압축파일 모두 지원</small>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Create / Join Room Modal -->
+  <div class="modal-backdrop" id="roomModal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="modalTitle">방 ID로 입장</h3>
+        <button type="button" class="modal-close" id="modalCloseBtn">&times;</button>
+      </div>
+      <form id="roomForm" class="modal-form">
+        <label id="roomTitleField" hidden>
+          <span>방 이름 (선택)</span>
+          <input type="text" id="inputRoomTitle" maxlength="40" placeholder="예: 프로젝트 회의방" />
+        </label>
+        <label id="roomIdField">
+          <span>방 ID (영문/숫자)</span>
+          <input type="text" id="inputRoomId" maxlength="24" placeholder="예: A7K92P (비워두면 자동 생성)" />
+        </label>
+        <label>
+          <span>내 닉네임</span>
+          <input type="text" id="inputNickname" maxlength="20" placeholder="사용할 닉네임 입력" required />
+        </label>
+        <label>
+          <span>방 비밀번호 (선택)</span>
+          <input type="password" id="inputRoomPassword" maxlength="40" placeholder="비밀번호가 있는 방만 입력" />
+        </label>
+        <div class="modal-error" id="modalError" hidden></div>
+        <button type="submit" class="primary-btn full-btn" id="modalSubmitBtn">입장하기</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Image Lightbox -->
+  <div class="lightbox" id="lightbox" hidden>
+    <button type="button" class="lightbox-close" id="lightboxClose">&times;</button>
+    <img id="lightboxImg" src="" alt="미리보기" />
+    <a id="lightboxDownload" href="#" download class="lightbox-dl">원본 다운로드 ⬇</a>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

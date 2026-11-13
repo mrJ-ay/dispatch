@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: dispatch
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: ONEID_URL
+        value: https://oneid-ruddy.vercel.app
+      - key: ONEID_CLIENT_ID
+        value: dispatch
