@@ -70,7 +70,7 @@ async function verifyOneIdToken(token) {
   try {
     const res = await fetch(`${ONEID_URL}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
     const user = await res.json();
@@ -256,6 +256,17 @@ io.on('connection', (socket) => {
     room.members.set(socket.id, currentMember);
     socket.join(room.id);
 
+    const joinMsg = {
+      id: crypto.randomUUID(),
+      type: 'system',
+      text: `${nickname}${verifiedUser ? ' ✓' : ''}님이 입장했습니다.`,
+      createdAt: Date.now(),
+    };
+    room.messages.push(joinMsg);
+    if (room.messages.length > MAX_MESSAGES_PER_ROOM) {
+      room.messages.splice(0, room.messages.length - MAX_MESSAGES_PER_ROOM);
+    }
+
     ack?.({
       ok: true,
       room: {
@@ -268,6 +279,7 @@ io.on('connection', (socket) => {
       me: currentMember,
     });
 
+    socket.to(room.id).emit('chat:message', joinMsg);
     broadcastMembers(room);
   });
 

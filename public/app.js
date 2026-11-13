@@ -372,7 +372,10 @@
     el.roomTitle.textContent = title;
     el.roomIdPill.textContent = `#${state.currentRoom.roomId}`;
     const count = state.members.length;
-    el.roomStatus.textContent = count > 0 ? `참여자 ${count}명 온라인` : '연결됨';
+    const meLabel = state.me?.nickname
+      ? `${state.me.nickname}${state.me.verified ? ' ✓' : ''} · `
+      : '';
+    el.roomStatus.textContent = count > 0 ? `${meLabel}참여자 ${count}명 온라인` : `${meLabel}연결됨`;
   }
 
   function createMessageNode(msg) {
