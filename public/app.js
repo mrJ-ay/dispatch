@@ -23,6 +23,7 @@
     theme: localStorage.getItem(STORAGE_KEYS.theme) || 'light',
     soundEnabled: localStorage.getItem(STORAGE_KEYS.sound) !== 'false',
     savedRooms: safeJsonParse(localStorage.getItem(STORAGE_KEYS.rooms), []),
+    serverRooms: [],
     currentRoom: null,
     me: null,
     messages: [],
@@ -163,7 +164,7 @@
       const label = state.user.nickname || state.user.name || state.user.username || 'ONEID';
       el.authAvatar.textContent = label.slice(0, 1).toUpperCase();
       el.authName.textContent = `${label} ✓`;
-      el.authSub.textContent = 'ONEID 인증됨';
+      el.authSub.textContent = 'ONEID 인증됨 · 방 목록 바로 입장';
       el.oneidAuthBtn.textContent = '로그아웃';
       el.oneidAuthBtn.classList.add('is-authed');
     } else {
@@ -172,6 +173,29 @@
       el.authSub.textContent = '비로그인 · 방 ID로 참여';
       el.oneidAuthBtn.textContent = 'ONEID 로그인';
       el.oneidAuthBtn.classList.remove('is-authed');
+    }
+  }
+
+  async function fetchServerRooms() {
+    if (!state.token || !state.user) {
+      state.serverRooms = [];
+      renderRoomsList();
+      return;
+    }
+    try {
+      const resp = await fetch('/api/rooms', {
+        headers: { Authorization: `Bearer ${state.token}` },
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.authed && Array.isArray(data.rooms)) {
+        state.serverRooms = data.rooms;
+      } else {
+        state.serverRooms = [];
+      }
+      renderRoomsList();
+    } catch {
+      // Ignore network errors
     }
   }
 
@@ -198,15 +222,35 @@
 
   function renderRoomsList() {
     el.roomsList.innerHTML = '';
-    if (!state.savedRooms.length) {
+    const isAuthed = Boolean(state.token && state.user);
+
+    let listToRender = [];
+    if (isAuthed) {
+      const merged = new Map();
+      for (const r of state.serverRooms) {
+        merged.set(r.roomId, { ...r });
+      }
+      for (const r of state.savedRooms) {
+        if (!merged.has(r.roomId)) {
+          merged.set(r.roomId, { ...r, memberCount: null });
+        }
+      }
+      listToRender = Array.from(merged.values());
+    } else {
+      listToRender = state.savedRooms;
+    }
+
+    if (!listToRender.length) {
       const empty = document.createElement('div');
       empty.className = 'rooms-empty';
-      empty.textContent = '참여한 방이 없습니다. 방을 만들거나 방 ID로 입장하세요.';
+      empty.textContent = isAuthed
+        ? '열려 있는 방이 없습니다. 새 방을 만들어 보세요.'
+        : '비로그인 상태에서는 방 ID로만 입장할 수 있습니다.';
       el.roomsList.appendChild(empty);
       return;
     }
 
-    for (const room of state.savedRooms) {
+    for (const room of listToRender) {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'room-item';
@@ -236,7 +280,10 @@
 
       const sub = document.createElement('div');
       sub.className = 'room-item-id';
-      sub.textContent = `#${room.roomId}`;
+      sub.textContent =
+        typeof room.memberCount === 'number'
+          ? `#${room.roomId} · ${room.memberCount}명 온라인`
+          : `#${room.roomId}`;
 
       meta.append(top, sub);
       item.append(avatar, meta);
@@ -244,6 +291,10 @@
       item.addEventListener('click', () => {
         if (state.currentRoom?.roomId === room.roomId) {
           document.body.classList.add('mobile-in-chat');
+          return;
+        }
+        if (isAuthed && !room.hasPassword) {
+          joinRoom({ roomId: room.roomId, title: room.title });
           return;
         }
         openModal('join', { roomId: room.roomId });
@@ -566,6 +617,12 @@
       if (node) node.remove();
     });
 
+    socket.on('rooms:updated', () => {
+      if (state.token && state.user) {
+        fetchServerRooms();
+      }
+    });
+
     return socket;
   }
 
@@ -807,9 +864,11 @@
   function logoutOneid() {
     state.token = '';
     state.user = null;
+    state.serverRooms = [];
     localStorage.removeItem(STORAGE_KEYS.oneidToken);
     localStorage.removeItem(STORAGE_KEYS.oneidUser);
     renderAuthUI();
+    renderRoomsList();
   }
 
   async function handleOneidCallback() {
@@ -860,6 +919,7 @@
       localStorage.setItem(STORAGE_KEYS.oneidToken, state.token);
       localStorage.setItem(STORAGE_KEYS.oneidUser, JSON.stringify(state.user));
       renderAuthUI();
+      await fetchServerRooms();
     } catch {
       // Ignore OAuth network errors
     }
@@ -1019,6 +1079,10 @@
 
     await loadConfig();
     await handleOneidCallback();
+    if (state.token && state.user) {
+      ensureSocket();
+      await fetchServerRooms();
+    }
 
     const params = new URLSearchParams(window.location.search);
     const inviteRoom = params.get('room');

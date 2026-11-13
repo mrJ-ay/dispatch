@@ -121,6 +121,25 @@ app.get('/api/config', (_, res) => {
   res.json({ oneidUrl: ONEID_URL, clientId: ONEID_CLIENT_ID });
 });
 
+app.get('/api/rooms', async (req, res) => {
+  const authHeader = String(req.headers.authorization || '');
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const verifiedUser = await verifyOneIdToken(token);
+  if (!verifiedUser) {
+    return res.json({ ok: true, authed: false, rooms: [] });
+  }
+  const list = Array.from(rooms.values())
+    .map((r) => ({
+      roomId: r.id,
+      title: r.title,
+      hasPassword: Boolean(r.passwordHash),
+      memberCount: r.members.size,
+      createdAt: r.createdAt,
+    }))
+    .sort((a, b) => b.memberCount - a.memberCount || b.createdAt - a.createdAt);
+  return res.json({ ok: true, authed: true, rooms: list });
+});
+
 app.post('/api/rooms', async (req, res) => {
   const { title, roomId, password, token } = req.body || {};
   let id = normalizeRoomId(roomId);
@@ -218,6 +237,7 @@ function broadcastMembers(room) {
     userId: m.userId,
   }));
   io.to(room.id).emit('room:members', { roomId: room.id, members: list });
+  io.emit('rooms:updated');
 }
 
 io.on('connection', (socket) => {
