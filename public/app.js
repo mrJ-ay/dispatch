@@ -467,19 +467,17 @@
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
 
-    if (!isMine) {
-      const sender = document.createElement('div');
-      sender.className = 'msg-sender';
-      sender.textContent = senderInfo.nickname || '익명';
-      if (senderInfo.verified) {
-        const badge = document.createElement('span');
-        badge.className = 'verified-badge';
-        badge.title = 'ONEID 인증 사용자';
-        badge.textContent = '✓';
-        sender.appendChild(badge);
-      }
-      bubble.appendChild(sender);
+    const sender = document.createElement('div');
+    sender.className = 'msg-sender';
+    sender.textContent = senderInfo.nickname || '익명';
+    if (senderInfo.verified) {
+      const badge = document.createElement('span');
+      badge.className = 'verified-badge';
+      badge.title = 'ONEID 인증 사용자';
+      badge.textContent = '✓';
+      sender.appendChild(badge);
     }
+    bubble.appendChild(sender);
 
     if (msg.replyTo) {
       const quote = document.createElement('div');
