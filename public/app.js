@@ -457,17 +457,27 @@
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
-    const sender = document.createElement('div');
-    sender.className = 'bubble-sender';
-    sender.textContent = senderInfo.nickname || '익명';
+    const profile = document.createElement('div');
+    profile.className = 'msg-profile';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'msg-avatar';
+    const displayNick = senderInfo.nickname || '익명';
+    avatar.textContent = displayNick.slice(0, 1).toUpperCase();
+
+    const profileName = document.createElement('div');
+    profileName.className = 'msg-profile-name';
+    profileName.textContent = displayNick;
     if (senderInfo.verified) {
       const badge = document.createElement('span');
       badge.className = 'verified-badge';
       badge.title = 'ONEID 인증 사용자';
       badge.textContent = '✓';
-      sender.appendChild(badge);
+      profileName.appendChild(badge);
     }
-    bubble.appendChild(sender);
+
+    profile.append(avatar, profileName);
+    row.appendChild(profile);
 
     if (msg.replyTo) {
       const quote = document.createElement('div');
