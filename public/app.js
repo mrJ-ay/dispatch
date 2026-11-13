@@ -151,6 +151,7 @@
   }
 
   function getDisplayName() {
+    if (state.user?.nickname) return state.user.nickname;
     if (state.user?.name) return state.user.name;
     if (state.user?.username) return state.user.username;
     return state.nickname || '';
@@ -159,7 +160,7 @@
   function renderAuthUI() {
     const name = getDisplayName();
     if (state.user && state.token) {
-      const label = state.user.name || state.user.username || 'ONEID';
+      const label = state.user.nickname || state.user.name || state.user.username || 'ONEID';
       el.authAvatar.textContent = label.slice(0, 1).toUpperCase();
       el.authName.textContent = `${label} ✓`;
       el.authSub.textContent = 'ONEID 인증됨';
@@ -792,15 +793,12 @@
     sessionStorage.setItem(STORAGE_KEYS.pkceState, oauthState);
 
     const redirectUri = `${window.location.origin}/`;
-    const authUrl = new URL(`${state.config.oneidUrl}/oauth/authorize`);
+    const authUrl = new URL(`${state.config.oneidUrl}/login.html`);
     authUrl.searchParams.set('client_id', state.config.clientId);
     authUrl.searchParams.set('redirect_uri', redirectUri);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', 'profile');
     authUrl.searchParams.set('code_challenge', challenge);
-    authUrl.searchParams.set('code_challenge_method', 'S256');
     authUrl.searchParams.set('state', oauthState);
-    window.location.href = authUrl.toString();
+    window.location.assign(authUrl.toString());
   }
 
   function logoutOneid() {
@@ -831,14 +829,13 @@
     }
 
     try {
-      const tokenRes = await fetch(`${state.config.oneidUrl}/oauth/token`, {
+      const tokenRes = await fetch(`${state.config.oneidUrl}/api/oauth/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          grant_type: 'authorization_code',
+          client_id: state.config.clientId,
           code,
           redirect_uri: `${window.location.origin}/`,
-          client_id: state.config.clientId,
           code_verifier: verifier,
         }),
       });
@@ -846,11 +843,14 @@
       const tokenData = await tokenRes.json();
       if (!tokenData.access_token) return;
 
-      const userRes = await fetch(`${state.config.oneidUrl}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
-      if (!userRes.ok) return;
-      const userData = await userRes.json();
+      let userData = tokenData.user || null;
+      if (!userData) {
+        const userRes = await fetch(`${state.config.oneidUrl}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        });
+        if (!userRes.ok) return;
+        userData = await userRes.json();
+      }
 
       state.token = tokenData.access_token;
       state.user = userData;
