@@ -29,6 +29,17 @@ app.use(express.static(PUBLIC_DIR));
 
 // In-memory room store: roomId -> { id, title, passwordHash, ownerId, messages: [], members: Map<socketId, member> }
 const rooms = new Map();
+// userId -> { userId, username, nickname, avatarUrl, avatarColor, statusMsg }
+const userProfiles = new Map();
+// userId -> Array<{ id, nickname, addedAt }>
+const userFriends = new Map();
+// userId -> Set<socketId>
+const onlineUsers = new Map();
+
+function extractBearer(req) {
+  const h = String(req.headers.authorization || '');
+  return h.startsWith('Bearer ') ? h.slice(7).trim() : '';
+}
 
 function normalizeRoomId(raw = '') {
   return String(raw).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 24);
@@ -76,6 +87,7 @@ async function verifyOneIdToken(token) {
     const user = await res.json();
     return {
       userId: user.user_id || user.id || user.username,
+      username: user.username || '',
       nickname: user.nickname || user.username,
       verified: true,
     };
@@ -138,6 +150,118 @@ app.get('/api/rooms', async (req, res) => {
     }))
     .sort((a, b) => b.memberCount - a.memberCount || b.createdAt - a.createdAt);
   return res.json({ ok: true, authed: true, rooms: list });
+});
+
+app.post('/api/profile', async (req, res) => {
+  const verifiedUser = await verifyOneIdToken(extractBearer(req));
+  if (!verifiedUser) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
+  }
+  const { avatarUrl = '', avatarColor = '', statusMsg = '' } = req.body || {};
+  const prev = userProfiles.get(verifiedUser.userId) || {};
+  const updated = {
+    userId: verifiedUser.userId,
+    username: verifiedUser.username,
+    nickname: verifiedUser.nickname,
+    avatarUrl: String(avatarUrl || '').slice(0, 500),
+    avatarColor: String(avatarColor || prev.avatarColor || '').slice(0, 32),
+    statusMsg: String(statusMsg || '').trim().slice(0, 60),
+  };
+  userProfiles.set(verifiedUser.userId, updated);
+  return res.json({ ok: true, profile: updated });
+});
+
+app.get('/api/friends', async (req, res) => {
+  const verifiedUser = await verifyOneIdToken(extractBearer(req));
+  if (!verifiedUser) {
+    return res.json({ ok: true, authed: false, friends: [] });
+  }
+  const raw = userFriends.get(verifiedUser.userId) || [];
+  const enriched = raw.map((f) => {
+    const prof = userProfiles.get(f.id);
+    const isOnline = (onlineUsers.get(f.id)?.size || 0) > 0;
+    return {
+      id: f.id,
+      nickname: prof?.nickname || f.nickname,
+      avatarUrl: prof?.avatarUrl || '',
+      avatarColor: prof?.avatarColor || '',
+      statusMsg: prof?.statusMsg || '',
+      online: isOnline,
+      addedAt: f.addedAt,
+    };
+  });
+  return res.json({ ok: true, authed: true, friends: enriched });
+});
+
+app.post('/api/friends', async (req, res) => {
+  const verifiedUser = await verifyOneIdToken(extractBearer(req));
+  if (!verifiedUser) {
+    return res.status(401).json({ error: '친구 기능은 ONEID 로그인 후 이용할 수 있습니다.' });
+  }
+  const target = String(req.body?.target || '').trim().slice(0, 40);
+  if (!target) {
+    return res.status(400).json({ error: '친구의 아이디 또는 닉네임을 입력하세요.' });
+  }
+
+  let matchedProfile = null;
+  for (const prof of userProfiles.values()) {
+    if (
+      prof.userId === target ||
+      (prof.username && prof.username.toLowerCase() === target.toLowerCase()) ||
+      (prof.nickname && prof.nickname.toLowerCase() === target.toLowerCase())
+    ) {
+      matchedProfile = prof;
+      break;
+    }
+  }
+
+  const friendId = matchedProfile ? matchedProfile.userId : target;
+  const friendNick = matchedProfile ? matchedProfile.nickname : target;
+  if (friendId === verifiedUser.userId) {
+    return res.status(400).json({ error: '자기 자신은 친구로 추가할 수 없습니다.' });
+  }
+
+  const list = userFriends.get(verifiedUser.userId) || [];
+  if (!list.some((f) => f.id === friendId || f.nickname.toLowerCase() === friendNick.toLowerCase())) {
+    list.unshift({ id: friendId, nickname: friendNick, addedAt: Date.now() });
+    userFriends.set(verifiedUser.userId, list);
+  }
+  return res.status(201).json({ ok: true, friend: { id: friendId, nickname: friendNick } });
+});
+
+app.delete('/api/friends/:id', async (req, res) => {
+  const verifiedUser = await verifyOneIdToken(extractBearer(req));
+  if (!verifiedUser) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
+  }
+  const targetId = decodeURIComponent(String(req.params.id || ''));
+  const list = (userFriends.get(verifiedUser.userId) || []).filter((f) => f.id !== targetId);
+  userFriends.set(verifiedUser.userId, list);
+  return res.json({ ok: true });
+});
+
+app.post('/api/dm', async (req, res) => {
+  const verifiedUser = await verifyOneIdToken(extractBearer(req));
+  if (!verifiedUser) {
+    return res.status(401).json({ error: '1:1 대화는 ONEID 로그인 후 이용할 수 있습니다.' });
+  }
+  const friendId = String(req.body?.friendId || '').trim();
+  const friendName = String(req.body?.friendName || friendId).trim().slice(0, 20);
+  if (!friendId) {
+    return res.status(400).json({ error: '대화할 친구를 선택하세요.' });
+  }
+  const pairHash = crypto
+    .createHash('sha1')
+    .update([verifiedUser.userId, friendId].sort().join('::'))
+    .digest('hex')
+    .slice(0, 10)
+    .toUpperCase();
+  const dmRoomId = `DM_${pairHash}`;
+  const room = getOrCreateRoom(dmRoomId, {
+    title: `${verifiedUser.nickname} · ${friendName}`,
+    ownerId: verifiedUser.userId,
+  });
+  return res.json({ ok: true, roomId: room.id, title: room.title });
 });
 
 app.post('/api/rooms', async (req, res) => {
@@ -235,6 +359,9 @@ function broadcastMembers(room) {
     nickname: m.nickname,
     verified: m.verified,
     userId: m.userId,
+    avatarUrl: m.avatarUrl || '',
+    avatarColor: m.avatarColor || '',
+    statusMsg: m.statusMsg || '',
   }));
   io.to(room.id).emit('room:members', { roomId: room.id, members: list });
   io.emit('rooms:updated');
@@ -243,6 +370,7 @@ function broadcastMembers(room) {
 io.on('connection', (socket) => {
   let currentRoomId = null;
   let currentMember = null;
+  let connectedUserId = null;
 
   socket.on('room:join', async (payload = {}, ack) => {
     const roomId = normalizeRoomId(payload.roomId);
@@ -258,6 +386,24 @@ io.on('connection', (socket) => {
     const verifiedUser = await verifyOneIdToken(payload.token);
     const nickname = verifiedUser?.nickname || String(payload.nickname || '').trim().slice(0, 20) || `익명-${socket.id.slice(0, 4)}`;
 
+    let savedProf = null;
+    if (verifiedUser) {
+      connectedUserId = verifiedUser.userId;
+      if (!onlineUsers.has(verifiedUser.userId)) onlineUsers.set(verifiedUser.userId, new Set());
+      onlineUsers.get(verifiedUser.userId).add(socket.id);
+
+      const prevProf = userProfiles.get(verifiedUser.userId) || {};
+      savedProf = {
+        userId: verifiedUser.userId,
+        username: verifiedUser.username,
+        nickname: verifiedUser.nickname,
+        avatarUrl: String(payload.avatarUrl ?? prevProf.avatarUrl ?? '').slice(0, 500),
+        avatarColor: String(payload.avatarColor ?? prevProf.avatarColor ?? '').slice(0, 32),
+        statusMsg: String(payload.statusMsg ?? prevProf.statusMsg ?? '').trim().slice(0, 60),
+      };
+      userProfiles.set(verifiedUser.userId, savedProf);
+    }
+
     if (currentRoomId && rooms.has(currentRoomId)) {
       const prev = rooms.get(currentRoomId);
       prev.members.delete(socket.id);
@@ -271,6 +417,9 @@ io.on('connection', (socket) => {
       nickname,
       verified: Boolean(verifiedUser),
       userId: verifiedUser?.userId || null,
+      avatarUrl: savedProf ? savedProf.avatarUrl : String(payload.avatarUrl || '').slice(0, 500),
+      avatarColor: savedProf ? savedProf.avatarColor : String(payload.avatarColor || '').slice(0, 32),
+      statusMsg: savedProf ? savedProf.statusMsg : String(payload.statusMsg || '').trim().slice(0, 60),
     };
 
     room.members.set(socket.id, currentMember);
@@ -289,6 +438,40 @@ io.on('connection', (socket) => {
     });
 
     broadcastMembers(room);
+  });
+
+  socket.on('profile:update', (payload = {}, ack) => {
+    if (!currentMember) {
+      return ack?.({ ok: false });
+    }
+    if (!currentMember.verified && payload.nickname) {
+      const clean = String(payload.nickname).trim().slice(0, 20);
+      if (clean) currentMember.nickname = clean;
+    }
+    if (typeof payload.avatarUrl === 'string') {
+      currentMember.avatarUrl = payload.avatarUrl.slice(0, 500);
+    }
+    if (typeof payload.avatarColor === 'string') {
+      currentMember.avatarColor = payload.avatarColor.slice(0, 32);
+    }
+    if (typeof payload.statusMsg === 'string') {
+      currentMember.statusMsg = payload.statusMsg.trim().slice(0, 60);
+    }
+    if (currentMember.userId) {
+      const prev = userProfiles.get(currentMember.userId) || {};
+      userProfiles.set(currentMember.userId, {
+        ...prev,
+        userId: currentMember.userId,
+        nickname: currentMember.nickname,
+        avatarUrl: currentMember.avatarUrl,
+        avatarColor: currentMember.avatarColor,
+        statusMsg: currentMember.statusMsg,
+      });
+    }
+    if (currentRoomId && rooms.has(currentRoomId)) {
+      broadcastMembers(rooms.get(currentRoomId));
+    }
+    ack?.({ ok: true, me: currentMember });
   });
 
   socket.on('chat:send', (payload = {}, ack) => {
@@ -310,6 +493,9 @@ io.on('connection', (socket) => {
         nickname: currentMember.nickname,
         verified: currentMember.verified,
         userId: currentMember.userId,
+        avatarUrl: currentMember.avatarUrl || '',
+        avatarColor: currentMember.avatarColor || '',
+        statusMsg: currentMember.statusMsg || '',
       },
       text,
       replyTo: payload.replyTo || null,
@@ -352,6 +538,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    if (connectedUserId && onlineUsers.has(connectedUserId)) {
+      const set = onlineUsers.get(connectedUserId);
+      set.delete(socket.id);
+      if (set.size === 0) onlineUsers.delete(connectedUserId);
+    }
     if (currentRoomId && rooms.has(currentRoomId)) {
       const room = rooms.get(currentRoomId);
       room.members.delete(socket.id);

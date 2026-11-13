@@ -35,7 +35,10 @@
             <span id="authSub">방 ID로 바로 입장 가능</span>
           </div>
         </div>
-        <button type="button" class="auth-btn" id="oneidAuthBtn">ONEID 로그인</button>
+        <div class="auth-actions">
+          <button type="button" class="icon-btn" id="openProfileBtn" title="프로필 설정">⚙️</button>
+          <button type="button" class="auth-btn" id="oneidAuthBtn">ONEID 로그인</button>
+        </div>
       </div>
 
       <div class="room-actions">
@@ -43,10 +46,26 @@
         <button type="button" class="secondary-btn" id="openJoinModalBtn">방 ID로 입장</button>
       </div>
 
-      <div class="rooms-section">
+      <div class="sidebar-tabs">
+        <button type="button" class="sidebar-tab active" id="tabRoomsBtn">💬 대화방</button>
+        <button type="button" class="sidebar-tab" id="tabFriendsBtn">👥 친구</button>
+      </div>
+
+      <div class="rooms-section" id="roomsSection">
         <div class="section-label">내 대화방 목록</div>
         <ul class="rooms-list" id="roomsList">
           <li class="rooms-empty">참여한 대화방이 없습니다.</li>
+        </ul>
+      </div>
+
+      <div class="rooms-section" id="friendsSection" hidden>
+        <form class="friend-add-form" id="addFriendForm">
+          <input type="text" id="friendInput" maxlength="40" placeholder="친구 아이디 또는 닉네임" />
+          <button type="submit" class="primary-btn friend-add-btn">추가</button>
+        </form>
+        <div class="section-label">친구 목록</div>
+        <ul class="rooms-list" id="friendsList">
+          <li class="rooms-empty">추가된 친구가 없습니다.</li>
         </ul>
       </div>
     </aside>
@@ -152,6 +171,46 @@
         </label>
         <div class="modal-error" id="modalError" hidden></div>
         <button type="submit" class="primary-btn full-btn" id="modalSubmitBtn">입장하기</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Profile Settings Modal -->
+  <div class="modal-backdrop" id="profileModal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>프로필 사용자 지정</h3>
+        <button type="button" class="modal-close" id="profileCloseBtn">&times;</button>
+      </div>
+      <form id="profileForm" class="modal-form">
+        <div class="profile-avatar-editor">
+          <div class="profile-preview-avatar" id="profilePreviewAvatar">?</div>
+          <div class="profile-avatar-btns">
+            <input type="file" id="profileAvatarInput" accept="image/*" hidden />
+            <button type="button" class="secondary-btn" id="profileAvatarUploadBtn">사진 업로드</button>
+            <button type="button" class="secondary-btn" id="profileAvatarResetBtn">기본으로</button>
+          </div>
+        </div>
+        <div class="profile-color-row">
+          <span>배경 색상</span>
+          <div class="color-swatches" id="profileColorSwatches">
+            <button type="button" class="color-swatch" data-color="" style="background:linear-gradient(135deg,#27ae60,#1e8449)" title="기본"></button>
+            <button type="button" class="color-swatch" data-color="#3390ec" style="background:#3390ec"></button>
+            <button type="button" class="color-swatch" data-color="#8e44ad" style="background:#8e44ad"></button>
+            <button type="button" class="color-swatch" data-color="#e67e22" style="background:#e67e22"></button>
+            <button type="button" class="color-swatch" data-color="#e74c3c" style="background:#e74c3c"></button>
+            <button type="button" class="color-swatch" data-color="#16a085" style="background:#16a085"></button>
+          </div>
+        </div>
+        <label>
+          <span id="profileNickLabel">닉네임</span>
+          <input type="text" id="inputProfileNickname" maxlength="20" placeholder="사용할 닉네임" />
+        </label>
+        <label>
+          <span>상태 메시지</span>
+          <input type="text" id="inputProfileStatus" maxlength="60" placeholder="예: 작업 중입니다 🎧" />
+        </label>
+        <button type="submit" class="primary-btn full-btn" id="profileSaveBtn">저장하기</button>
       </form>
     </div>
   </div>

@@ -6,6 +6,8 @@
     sound: 'dispatch_sound',
     nickname: 'dispatch_nickname',
     rooms: 'dispatch_rooms',
+    profile: 'dispatch_profile',
+    friends: 'dispatch_friends',
     oneidToken: 'dispatch_oneid_token',
     oneidUser: 'dispatch_oneid_user',
     pkceVerifier: 'dispatch_pkce_verifier',
@@ -20,10 +22,19 @@
     token: localStorage.getItem(STORAGE_KEYS.oneidToken) || '',
     user: safeJsonParse(localStorage.getItem(STORAGE_KEYS.oneidUser), null),
     nickname: localStorage.getItem(STORAGE_KEYS.nickname) || '',
+    profile: safeJsonParse(localStorage.getItem(STORAGE_KEYS.profile), {
+      avatarUrl: '',
+      avatarColor: '',
+      statusMsg: '',
+    }),
     theme: localStorage.getItem(STORAGE_KEYS.theme) || 'light',
     soundEnabled: localStorage.getItem(STORAGE_KEYS.sound) !== 'false',
     savedRooms: safeJsonParse(localStorage.getItem(STORAGE_KEYS.rooms), []),
     serverRooms: [],
+    friends: safeJsonParse(localStorage.getItem(STORAGE_KEYS.friends), []),
+    sidebarTab: 'rooms',
+    draftAvatarUrl: '',
+    draftAvatarColor: '',
     currentRoom: null,
     me: null,
     messages: [],
@@ -45,10 +56,18 @@
     authAvatar: document.getElementById('authAvatar'),
     authName: document.getElementById('authName'),
     authSub: document.getElementById('authSub'),
+    openProfileBtn: document.getElementById('openProfileBtn'),
     oneidAuthBtn: document.getElementById('oneidAuthBtn'),
     openCreateModalBtn: document.getElementById('openCreateModalBtn'),
     openJoinModalBtn: document.getElementById('openJoinModalBtn'),
+    tabRoomsBtn: document.getElementById('tabRoomsBtn'),
+    tabFriendsBtn: document.getElementById('tabFriendsBtn'),
+    roomsSection: document.getElementById('roomsSection'),
     roomsList: document.getElementById('roomsList'),
+    friendsSection: document.getElementById('friendsSection'),
+    addFriendForm: document.getElementById('addFriendForm'),
+    friendInput: document.getElementById('friendInput'),
+    friendsList: document.getElementById('friendsList'),
 
     chatWelcome: document.getElementById('chatWelcome'),
     welcomeCreateBtn: document.getElementById('welcomeCreateBtn'),
@@ -91,6 +110,18 @@
     inputRoomPassword: document.getElementById('inputRoomPassword'),
     modalError: document.getElementById('modalError'),
     modalSubmitBtn: document.getElementById('modalSubmitBtn'),
+
+    profileModal: document.getElementById('profileModal'),
+    profileCloseBtn: document.getElementById('profileCloseBtn'),
+    profileForm: document.getElementById('profileForm'),
+    profilePreviewAvatar: document.getElementById('profilePreviewAvatar'),
+    profileAvatarInput: document.getElementById('profileAvatarInput'),
+    profileAvatarUploadBtn: document.getElementById('profileAvatarUploadBtn'),
+    profileAvatarResetBtn: document.getElementById('profileAvatarResetBtn'),
+    profileColorSwatches: document.getElementById('profileColorSwatches'),
+    profileNickLabel: document.getElementById('profileNickLabel'),
+    inputProfileNickname: document.getElementById('inputProfileNickname'),
+    inputProfileStatus: document.getElementById('inputProfileStatus'),
 
     lightbox: document.getElementById('lightbox'),
     lightboxClose: document.getElementById('lightboxClose'),
@@ -158,22 +189,296 @@
     return state.nickname || '';
   }
 
+  function renderAvatarEl(targetEl, { nickname = '?', avatarUrl = '', avatarColor = '' } = {}) {
+    if (!targetEl) return;
+    targetEl.innerHTML = '';
+    targetEl.style.background = avatarColor || '';
+    if (avatarUrl) {
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      img.alt = nickname || 'avatar';
+      targetEl.appendChild(img);
+    } else {
+      targetEl.textContent = nickname ? nickname.slice(0, 1).toUpperCase() : '?';
+    }
+  }
+
   function renderAuthUI() {
     const name = getDisplayName();
+    const prof = state.profile || {};
     if (state.user && state.token) {
       const label = state.user.nickname || state.user.name || state.user.username || 'ONEID';
-      el.authAvatar.textContent = label.slice(0, 1).toUpperCase();
+      renderAvatarEl(el.authAvatar, {
+        nickname: label,
+        avatarUrl: prof.avatarUrl,
+        avatarColor: prof.avatarColor,
+      });
       el.authName.textContent = `${label} ✓`;
-      el.authSub.textContent = 'ONEID 인증됨 · 방 목록 바로 입장';
+      el.authSub.textContent = prof.statusMsg || 'ONEID 인증됨 · 방 목록 바로 입장';
       el.oneidAuthBtn.textContent = '로그아웃';
       el.oneidAuthBtn.classList.add('is-authed');
     } else {
-      el.authAvatar.textContent = name ? name.slice(0, 1).toUpperCase() : '?';
+      renderAvatarEl(el.authAvatar, {
+        nickname: name || '?',
+        avatarUrl: prof.avatarUrl,
+        avatarColor: prof.avatarColor,
+      });
       el.authName.textContent = name || '게스트';
-      el.authSub.textContent = '비로그인 · 방 ID로 참여';
+      el.authSub.textContent = prof.statusMsg || '비로그인 · 방 ID로 참여';
       el.oneidAuthBtn.textContent = 'ONEID 로그인';
       el.oneidAuthBtn.classList.remove('is-authed');
     }
+  }
+
+  function switchSidebarTab(tab) {
+    state.sidebarTab = tab;
+    const isRooms = tab === 'rooms';
+    el.tabRoomsBtn.classList.toggle('active', isRooms);
+    el.tabFriendsBtn.classList.toggle('active', !isRooms);
+    el.roomsSection.hidden = !isRooms;
+    el.friendsSection.hidden = isRooms;
+    if (!isRooms && state.token && state.user) {
+      fetchFriends();
+    }
+  }
+
+  async function fetchFriends() {
+    if (!state.token || !state.user) {
+      renderFriendsList();
+      return;
+    }
+    try {
+      const resp = await fetch('/api/friends', {
+        headers: { Authorization: `Bearer ${state.token}` },
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.authed && Array.isArray(data.friends)) {
+        state.friends = data.friends;
+        renderFriendsList();
+      }
+    } catch {
+      // Ignore network errors
+    }
+  }
+
+  function renderFriendsList() {
+    el.friendsList.innerHTML = '';
+    const isAuthed = Boolean(state.token && state.user);
+    if (!state.friends.length) {
+      const empty = document.createElement('li');
+      empty.className = 'rooms-empty';
+      empty.textContent = isAuthed
+        ? '추가된 친구가 없습니다. 위 입력창에 친구 아이디/닉네임을 입력하세요.'
+        : '게스트 모드에서는 로컬 친구 메모만 저장됩니다. (1:1 DM은 ONEID 로그인 필요)';
+      el.friendsList.appendChild(empty);
+      return;
+    }
+
+    for (const friend of state.friends) {
+      const item = document.createElement('div');
+      item.setAttribute('role', 'button');
+      item.tabIndex = 0;
+      item.className = 'room-item';
+
+      const avatar = document.createElement('div');
+      avatar.className = 'room-item-avatar';
+      renderAvatarEl(avatar, {
+        nickname: friend.nickname || friend.id,
+        avatarUrl: friend.avatarUrl,
+        avatarColor: friend.avatarColor,
+      });
+
+      const info = document.createElement('div');
+      info.className = 'room-item-info';
+
+      const title = document.createElement('strong');
+      title.textContent = friend.nickname || friend.id;
+
+      const sub = document.createElement('small');
+      if (isAuthed) {
+        const dot = document.createElement('span');
+        dot.className = `friend-online-dot ${friend.online ? 'is-online' : ''}`;
+        sub.appendChild(dot);
+        sub.appendChild(document.createTextNode(friend.statusMsg || (friend.online ? '온라인 · 클릭해 1:1 대화' : '오프라인 · 클릭해 1:1 대화')));
+      } else {
+        sub.textContent = '게스트 친구 (1:1 DM은 ONEID 로그인 필요)';
+      }
+
+      info.append(title, sub);
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'friend-del-btn';
+      delBtn.title = '친구 삭제';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeFriend(friend.id);
+      });
+
+      item.append(avatar, info, delBtn);
+      item.addEventListener('click', () => {
+        if (!isAuthed) {
+          alert('1:1 DM은 ONEID 로그인 후 이용할 수 있습니다.');
+          return;
+        }
+        startDmWithFriend(friend);
+      });
+
+      el.friendsList.appendChild(item);
+    }
+  }
+
+  async function addFriend(targetRaw) {
+    const target = String(targetRaw || '').trim();
+    if (!target) return;
+    if (state.token && state.user) {
+      try {
+        const resp = await fetch('/api/friends', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${state.token}`,
+          },
+          body: JSON.stringify({ target }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          alert(data.error || '친구 추가에 실패했습니다.');
+          return;
+        }
+        el.friendInput.value = '';
+        await fetchFriends();
+      } catch {
+        alert('네트워크 오류가 발생했습니다.');
+      }
+      return;
+    }
+
+    if (!state.friends.some((f) => f.id === target)) {
+      state.friends.unshift({ id: target, nickname: target });
+      localStorage.setItem(STORAGE_KEYS.friends, JSON.stringify(state.friends));
+      renderFriendsList();
+    }
+    el.friendInput.value = '';
+  }
+
+  async function removeFriend(friendId) {
+    if (state.token && state.user) {
+      try {
+        await fetch(`/api/friends/${encodeURIComponent(friendId)}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${state.token}` },
+        });
+        await fetchFriends();
+      } catch {
+        // Ignore
+      }
+      return;
+    }
+    state.friends = state.friends.filter((f) => f.id !== friendId);
+    localStorage.setItem(STORAGE_KEYS.friends, JSON.stringify(state.friends));
+    renderFriendsList();
+  }
+
+  async function startDmWithFriend(friend) {
+    try {
+      const resp = await fetch('/api/dm', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${state.token}`,
+        },
+        body: JSON.stringify({ friendId: friend.id, friendName: friend.nickname || friend.id }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.roomId) {
+        alert(data.error || 'DM 방을 열 수 없습니다.');
+        return;
+      }
+      await joinRoom({ roomId: data.roomId, title: data.title });
+    } catch {
+      alert('DM 연결 중 오류가 발생했습니다.');
+    }
+  }
+
+  function updateProfilePreview() {
+    const nick = el.inputProfileNickname.value.trim() || getDisplayName() || '?';
+    renderAvatarEl(el.profilePreviewAvatar, {
+      nickname: nick,
+      avatarUrl: state.draftAvatarUrl,
+      avatarColor: state.draftAvatarColor,
+    });
+    const swatches = el.profileColorSwatches.querySelectorAll('.color-swatch');
+    swatches.forEach((btn) => {
+      btn.classList.toggle('is-selected', (btn.dataset.color || '') === (state.draftAvatarColor || ''));
+    });
+  }
+
+  function openProfileModal() {
+    const isAuthed = Boolean(state.token && state.user);
+    state.draftAvatarUrl = state.profile?.avatarUrl || '';
+    state.draftAvatarColor = state.profile?.avatarColor || '';
+    el.inputProfileNickname.value = getDisplayName() || '';
+    el.inputProfileNickname.disabled = isAuthed;
+    el.profileNickLabel.textContent = isAuthed ? '닉네임 (ONEID 계정 고정)' : '닉네임 (게스트)';
+    el.inputProfileStatus.value = state.profile?.statusMsg || '';
+    updateProfilePreview();
+    el.profileModal.hidden = false;
+  }
+
+  function closeProfileModal() {
+    el.profileModal.hidden = true;
+  }
+
+  async function saveProfileModal(e) {
+    e.preventDefault();
+    const isAuthed = Boolean(state.token && state.user);
+    const nextNick = el.inputProfileNickname.value.trim();
+    const nextStatus = el.inputProfileStatus.value.trim();
+
+    if (!isAuthed && nextNick) {
+      state.nickname = nextNick;
+      localStorage.setItem(STORAGE_KEYS.nickname, nextNick);
+    }
+
+    state.profile = {
+      avatarUrl: state.draftAvatarUrl || '',
+      avatarColor: state.draftAvatarColor || '',
+      statusMsg: nextStatus,
+    };
+    localStorage.setItem(STORAGE_KEYS.profile, JSON.stringify(state.profile));
+    renderAuthUI();
+
+    if (isAuthed) {
+      try {
+        await fetch('/api/profile', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${state.token}`,
+          },
+          body: JSON.stringify(state.profile),
+        });
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (state.socket && state.currentRoom) {
+      state.socket.emit('profile:update', {
+        nickname: isAuthed ? undefined : nextNick,
+        ...state.profile,
+      }, (ack) => {
+        if (ack?.ok && ack.me) {
+          state.me = ack.me;
+          renderRoomHeader();
+        }
+      });
+    }
+
+    closeProfileModal();
   }
 
   async function fetchServerRooms() {
@@ -378,6 +683,9 @@
       userId: s.userId || msg?.userId || null,
       nickname: s.nickname || msg?.senderName || '',
       verified: Boolean(s.verified ?? msg?.verified),
+      avatarUrl: s.avatarUrl || '',
+      avatarColor: s.avatarColor || '',
+      statusMsg: s.statusMsg || '',
     };
   }
 
@@ -463,7 +771,11 @@
     const avatar = document.createElement('div');
     avatar.className = 'msg-avatar';
     const displayNick = senderInfo.nickname || '익명';
-    avatar.textContent = displayNick.slice(0, 1).toUpperCase();
+    renderAvatarEl(avatar, {
+      nickname: displayNick,
+      avatarUrl: senderInfo.avatarUrl,
+      avatarColor: senderInfo.avatarColor,
+    });
 
     const profileName = document.createElement('div');
     profileName.className = 'msg-profile-name';
@@ -474,6 +786,17 @@
       badge.title = 'ONEID 인증 사용자';
       badge.textContent = '✓';
       profileName.appendChild(badge);
+    }
+
+    if (!isMine && senderInfo.nickname) {
+      profile.style.cursor = 'pointer';
+      profile.title = `${displayNick}님 친구 추가`;
+      profile.addEventListener('click', () => {
+        if (confirm(`${displayNick}님을 친구로 추가할까요?`)) {
+          addFriend(senderInfo.userId || displayNick);
+          switchSidebarTab('friends');
+        }
+      });
     }
 
     profile.append(avatar, profileName);
@@ -645,6 +968,9 @@
           nickname: cleanNick,
           password,
           token: state.token || undefined,
+          avatarUrl: state.profile?.avatarUrl || '',
+          avatarColor: state.profile?.avatarColor || '',
+          statusMsg: state.profile?.statusMsg || '',
         },
         (res) => {
           if (!res?.ok) {
@@ -960,6 +1286,55 @@
       }
     });
 
+    el.openProfileBtn.addEventListener('click', openProfileModal);
+    el.authAvatar.style.cursor = 'pointer';
+    el.authAvatar.addEventListener('click', openProfileModal);
+    el.profileCloseBtn.addEventListener('click', closeProfileModal);
+    el.profileModal.addEventListener('click', (e) => {
+      if (e.target === el.profileModal) closeProfileModal();
+    });
+    el.profileForm.addEventListener('submit', saveProfileModal);
+    el.inputProfileNickname.addEventListener('input', updateProfilePreview);
+    el.profileAvatarUploadBtn.addEventListener('click', () => el.profileAvatarInput.click());
+    el.profileAvatarResetBtn.addEventListener('click', () => {
+      state.draftAvatarUrl = '';
+      state.draftAvatarColor = '';
+      updateProfilePreview();
+    });
+    el.profileAvatarInput.addEventListener('change', async () => {
+      const file = el.profileAvatarInput.files?.[0];
+      if (!file) return;
+      try {
+        const form = new FormData();
+        form.append('file', file);
+        const resp = await fetch('/api/upload', { method: 'POST', body: form });
+        const data = await resp.json();
+        if (resp.ok && data.url) {
+          state.draftAvatarUrl = data.url;
+          updateProfilePreview();
+        } else {
+          alert(data.error || '프로필 사진 업로드 실패');
+        }
+      } catch {
+        alert('프로필 사진 업로드 중 오류가 발생했습니다.');
+      } finally {
+        el.profileAvatarInput.value = '';
+      }
+    });
+    el.profileColorSwatches.addEventListener('click', (e) => {
+      const btn = e.target.closest('.color-swatch');
+      if (!btn) return;
+      state.draftAvatarColor = btn.dataset.color || '';
+      updateProfilePreview();
+    });
+
+    el.tabRoomsBtn.addEventListener('click', () => switchSidebarTab('rooms'));
+    el.tabFriendsBtn.addEventListener('click', () => switchSidebarTab('friends'));
+    el.addFriendForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      addFriend(el.friendInput.value);
+    });
+
     el.openCreateModalBtn.addEventListener('click', () => openModal('create'));
     el.welcomeCreateBtn.addEventListener('click', () => openModal('create'));
     el.openJoinModalBtn.addEventListener('click', () => openModal('join'));
@@ -1066,6 +1441,7 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         if (!el.lightbox.hidden) closeLightbox();
+        else if (!el.profileModal.hidden) closeProfileModal();
         else if (!el.roomModal.hidden) closeModal();
       }
     });
@@ -1076,13 +1452,14 @@
     applySoundUI();
     renderAuthUI();
     renderRoomsList();
+    renderFriendsList();
     bindEvents();
 
     await loadConfig();
     await handleOneidCallback();
     if (state.token && state.user) {
       ensureSocket();
-      await fetchServerRooms();
+      await Promise.all([fetchServerRooms(), fetchFriends()]);
     }
 
     const params = new URLSearchParams(window.location.search);
