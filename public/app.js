@@ -369,15 +369,34 @@
       el.replyPreview.hidden = true;
       return;
     }
+    const senderInfo = getSenderInfo(msg);
     state.replyTo = {
       id: msg.id,
-      senderName: msg.senderName || '알 수 없음',
+      senderName: senderInfo.nickname || '알 수 없음',
       snippet: msg.text ? msg.text.slice(0, 80) : msg.attachment?.name || '파일',
     };
     el.replySender.textContent = state.replyTo.senderName;
     el.replySnippet.textContent = state.replyTo.snippet;
     el.replyPreview.hidden = false;
     el.msgInput.focus();
+  }
+
+  function getSenderInfo(msg) {
+    const s = msg?.sender || {};
+    return {
+      socketId: s.socketId || msg?.socketId || null,
+      userId: s.userId || msg?.userId || null,
+      nickname: s.nickname || msg?.senderName || '',
+      verified: Boolean(s.verified ?? msg?.verified),
+    };
+  }
+
+  function isMyMessage(msg) {
+    const s = getSenderInfo(msg);
+    return Boolean(
+      (state.me?.socketId && s.socketId === state.me.socketId) ||
+      (state.me?.userId && s.userId && s.userId === state.me.userId)
+    );
   }
 
   function openLightbox(url, filename) {
@@ -438,9 +457,8 @@
       return sys;
     }
 
-    const isMine =
-      (state.me?.socketId && msg.socketId === state.me.socketId) ||
-      (state.me?.userId && msg.userId && msg.userId === state.me.userId);
+    const isMine = isMyMessage(msg);
+    const senderInfo = getSenderInfo(msg);
 
     const row = document.createElement('div');
     row.className = `msg-row ${isMine ? 'is-mine' : 'is-theirs'}`;
@@ -452,8 +470,8 @@
     if (!isMine) {
       const sender = document.createElement('div');
       sender.className = 'msg-sender';
-      sender.textContent = msg.senderName || '익명';
-      if (msg.verified) {
+      sender.textContent = senderInfo.nickname || '익명';
+      if (senderInfo.verified) {
         const badge = document.createElement('span');
         badge.className = 'verified-badge';
         badge.title = 'ONEID 인증 사용자';
@@ -577,10 +595,7 @@
     el.messagesList.appendChild(createMessageNode(msg));
     scrollToBottom(false);
 
-    const isMine =
-      (state.me?.socketId && msg.socketId === state.me.socketId) ||
-      (state.me?.userId && msg.userId && msg.userId === state.me.userId);
-    if (!isMine && msg.type !== 'system') {
+    if (!isMyMessage(msg) && msg.type !== 'system') {
       playChime();
     }
   }
