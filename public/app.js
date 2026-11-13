@@ -251,42 +251,32 @@
     }
 
     for (const room of listToRender) {
-      const item = document.createElement('button');
-      item.type = 'button';
+      const item = document.createElement('div');
+      item.setAttribute('role', 'button');
+      item.tabIndex = 0;
       item.className = 'room-item';
       if (state.currentRoom?.roomId === room.roomId) {
-        item.classList.add('is-active');
+        item.classList.add('active');
       }
 
       const avatar = document.createElement('div');
       avatar.className = 'room-item-avatar';
       avatar.textContent = (room.title || room.roomId).slice(0, 1).toUpperCase();
 
-      const meta = document.createElement('div');
-      meta.className = 'room-item-meta';
+      const info = document.createElement('div');
+      info.className = 'room-item-info';
 
-      const top = document.createElement('div');
-      top.className = 'room-item-top';
+      const title = document.createElement('strong');
+      title.textContent = `${room.hasPassword ? '🔒 ' : ''}${room.title || room.roomId}`;
 
-      const title = document.createElement('span');
-      title.className = 'room-item-title';
-      title.textContent = room.title || room.roomId;
-
-      const lock = document.createElement('span');
-      lock.className = 'room-item-lock';
-      lock.textContent = room.hasPassword ? '🔒' : '';
-
-      top.append(title, lock);
-
-      const sub = document.createElement('div');
-      sub.className = 'room-item-id';
+      const sub = document.createElement('small');
       sub.textContent =
         typeof room.memberCount === 'number'
           ? `#${room.roomId} · ${room.memberCount}명 온라인`
           : `#${room.roomId}`;
 
-      meta.append(top, sub);
-      item.append(avatar, meta);
+      info.append(title, sub);
+      item.append(avatar, info);
 
       item.addEventListener('click', () => {
         if (state.currentRoom?.roomId === room.roomId) {
@@ -461,14 +451,14 @@
     const senderInfo = getSenderInfo(msg);
 
     const row = document.createElement('div');
-    row.className = `msg-row ${isMine ? 'is-mine' : 'is-theirs'}`;
+    row.className = `msg-row ${isMine ? 'out' : 'in'}`;
     row.dataset.id = msg.id;
 
     const bubble = document.createElement('div');
-    bubble.className = 'msg-bubble';
+    bubble.className = 'bubble';
 
     const sender = document.createElement('div');
-    sender.className = 'msg-sender';
+    sender.className = 'bubble-sender';
     sender.textContent = senderInfo.nickname || '익명';
     if (senderInfo.verified) {
       const badge = document.createElement('span');
@@ -481,12 +471,10 @@
 
     if (msg.replyTo) {
       const quote = document.createElement('div');
-      quote.className = 'msg-reply-quote';
-      const qSender = document.createElement('div');
-      qSender.className = 'msg-reply-sender';
+      quote.className = 'bubble-reply';
+      const qSender = document.createElement('strong');
       qSender.textContent = msg.replyTo.senderName || '답장';
-      const qText = document.createElement('div');
-      qText.className = 'msg-reply-text';
+      const qText = document.createElement('span');
       qText.textContent = msg.replyTo.snippet || '';
       quote.append(qSender, qText);
       bubble.appendChild(quote);
@@ -495,59 +483,49 @@
     if (msg.attachment) {
       const att = msg.attachment;
       if (att.isImage) {
-        const imgWrap = document.createElement('div');
-        imgWrap.className = 'msg-image-wrap';
         const img = document.createElement('img');
-        img.className = 'msg-image';
+        img.className = 'bubble-img';
         img.src = att.url;
         img.alt = att.name || 'image';
         img.loading = 'lazy';
         img.addEventListener('click', () => openLightbox(att.url, att.name));
-        imgWrap.appendChild(img);
-        bubble.appendChild(imgWrap);
+        bubble.appendChild(img);
       } else {
         const card = document.createElement('a');
-        card.className = 'msg-file-card';
+        card.className = 'file-card';
         card.href = att.url;
         card.download = att.name || 'file';
         card.target = '_blank';
         card.rel = 'noopener noreferrer';
 
         const icon = document.createElement('div');
-        icon.className = 'msg-file-icon';
+        icon.className = 'file-icon';
         icon.textContent = '📄';
 
         const info = document.createElement('div');
-        info.className = 'msg-file-info';
-        const fname = document.createElement('div');
-        fname.className = 'msg-file-name';
+        info.className = 'file-info';
+        const fname = document.createElement('strong');
         fname.textContent = att.name || '첨부파일';
-        const fsize = document.createElement('div');
-        fsize.className = 'msg-file-size';
+        const fsize = document.createElement('span');
         fsize.textContent = formatBytes(att.size);
         info.append(fname, fsize);
 
-        const dl = document.createElement('span');
-        dl.className = 'msg-file-dl';
-        dl.textContent = '⬇';
-
-        card.append(icon, info, dl);
+        card.append(icon, info);
         bubble.appendChild(card);
       }
     }
 
     if (msg.text) {
       const body = document.createElement('div');
-      body.className = 'msg-text';
+      body.className = 'bubble-text';
       body.textContent = msg.text;
       bubble.appendChild(body);
     }
 
     const meta = document.createElement('div');
-    meta.className = 'msg-meta';
+    meta.className = 'bubble-footer';
 
     const time = document.createElement('span');
-    time.className = 'msg-time';
     time.textContent = formatTime(msg.createdAt);
     meta.appendChild(time);
 
@@ -556,7 +534,7 @@
 
     const replyBtn = document.createElement('button');
     replyBtn.type = 'button';
-    replyBtn.className = 'msg-action-btn';
+    replyBtn.className = 'msg-act-btn';
     replyBtn.title = '답장';
     replyBtn.textContent = '↩';
     replyBtn.addEventListener('click', () => setReply(msg));
@@ -565,7 +543,7 @@
     if (isMine || state.currentRoom?.isOwner) {
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
-      delBtn.className = 'msg-action-btn';
+      delBtn.className = 'msg-act-btn';
       delBtn.title = '삭제';
       delBtn.textContent = '🗑';
       delBtn.addEventListener('click', () => {
