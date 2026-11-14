@@ -14,6 +14,8 @@ import { initCallManager } from '/call.js';
     oneidUser: 'dispatch_oneid_user',
     pkceVerifier: 'dispatch_pkce_verifier',
     pkceState: 'dispatch_pkce_state',
+    lastRoom: 'dispatch_last_room',
+    msgPrefix: 'dispatch_msgs_',
   };
 
   const state = {
@@ -893,6 +895,39 @@ import { initCallManager } from '/call.js';
     return row;
   }
 
+  const MAX_CACHED_MESSAGES = 200;
+
+  function loadCachedMessages(roomId) {
+    if (!roomId) return [];
+    const list = safeJsonParse(localStorage.getItem(`${STORAGE_KEYS.msgPrefix}${roomId}`), []);
+    return Array.isArray(list) ? list : [];
+  }
+
+  function saveCachedMessages(roomId, messages) {
+    if (!roomId || !Array.isArray(messages)) return;
+    const trimmed = messages.slice(-MAX_CACHED_MESSAGES);
+    try {
+      localStorage.setItem(`${STORAGE_KEYS.msgPrefix}${roomId}`, JSON.stringify(trimmed));
+    } catch {
+      try {
+        localStorage.setItem(`${STORAGE_KEYS.msgPrefix}${roomId}`, JSON.stringify(trimmed.slice(-50)));
+      } catch {}
+    }
+  }
+
+  function mergeMessages(cached, serverMsgs) {
+    const byId = new Map();
+    for (const m of cached || []) {
+      if (m && m.id) byId.set(m.id, m);
+    }
+    for (const m of serverMsgs || []) {
+      if (m && m.id) byId.set(m.id, m);
+    }
+    return Array.from(byId.values())
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+      .slice(-MAX_CACHED_MESSAGES);
+  }
+
   function renderAllMessages() {
     el.messagesList.innerHTML = '';
     for (const msg of state.messages) {
@@ -902,7 +937,14 @@ import { initCallManager } from '/call.js';
   }
 
   function appendMessage(msg) {
+    if (msg?.id && state.messages.some((m) => m.id === msg.id)) return;
     state.messages.push(msg);
+    if (state.messages.length > MAX_CACHED_MESSAGES) {
+      state.messages = state.messages.slice(-MAX_CACHED_MESSAGES);
+    }
+    if (state.currentRoom?.roomId) {
+      saveCachedMessages(state.currentRoom.roomId, state.messages);
+    }
     el.messagesList.appendChild(createMessageNode(msg));
     scrollToBottom(false);
 
@@ -943,6 +985,9 @@ import { initCallManager } from '/call.js';
 
     socket.on('chat:deleted', ({ messageId }) => {
       state.messages = state.messages.filter((m) => m.id !== messageId);
+      if (state.currentRoom?.roomId) {
+        saveCachedMessages(state.currentRoom.roomId, state.messages);
+      }
       const node = el.messagesList.querySelector(`[data-id="${CSS.escape(messageId)}"]`);
       if (node) node.remove();
     });
@@ -991,7 +1036,10 @@ import { initCallManager } from '/call.js';
             isOwner: res.room.isOwner,
           };
           state.me = res.me;
-          state.messages = Array.isArray(res.room.messages) ? res.room.messages : [];
+          const serverMsgs = Array.isArray(res.room.messages) ? res.room.messages : [];
+          state.messages = mergeMessages(loadCachedMessages(state.currentRoom.roomId), serverMsgs);
+          saveCachedMessages(state.currentRoom.roomId, state.messages);
+          localStorage.setItem(STORAGE_KEYS.lastRoom, state.currentRoom.roomId);
           state.typingUsers.clear();
           setReply(null);
 
@@ -1473,6 +1521,12 @@ import { initCallManager } from '/call.js';
     const inviteRoom = params.get('room');
     if (inviteRoom) {
       openModal('join', { roomId: inviteRoom.trim() });
+    } else {
+      const lastRoom = localStorage.getItem(STORAGE_KEYS.lastRoom);
+      const savedNick = state.user?.nickname || state.user?.username || state.nickname;
+      if (lastRoom && (savedNick || state.token)) {
+        await joinRoom({ roomId: lastRoom, nickname: savedNick || '사용자' });
+      }
     }
   }
 

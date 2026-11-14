@@ -10,7 +10,10 @@ import { Server as SocketIOServer } from 'socket.io';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const DATA_DIR = path.join(__dirname, 'data');
+const STORE_FILE = path.join(DATA_DIR, 'store.json');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const PORT = Number(process.env.PORT || 5700);
 const ONEID_URL = (process.env.ONEID_URL || 'https://oneid-ruddy.vercel.app').replace(/\/+$/, '');
@@ -31,7 +34,7 @@ const io = new SocketIOServer(server, {
 app.use(express.json());
 app.use(express.static(PUBLIC_DIR));
 
-// In-memory room store: roomId -> { id, title, passwordHash, ownerId, messages: [], members: Map<socketId, member> }
+// Room store: roomId -> { id, title, passwordHash, ownerId, messages: [], members: Map<socketId, member> }
 const rooms = new Map();
 // userId -> { userId, username, nickname, avatarUrl, avatarColor, statusMsg }
 const userProfiles = new Map();
@@ -39,6 +42,68 @@ const userProfiles = new Map();
 const userFriends = new Map();
 // userId -> Set<socketId>
 const onlineUsers = new Map();
+
+let saveTimer = null;
+function scheduleSaveStore() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    try {
+      const serialized = {
+        rooms: Array.from(rooms.values()).map((r) => ({
+          id: r.id,
+          title: r.title,
+          passwordHash: r.passwordHash || null,
+          ownerId: r.ownerId || null,
+          createdAt: r.createdAt || Date.now(),
+          messages: Array.isArray(r.messages) ? r.messages.slice(-MAX_MESSAGES_PER_ROOM) : [],
+        })),
+        profiles: Array.from(userProfiles.entries()),
+        friends: Array.from(userFriends.entries()),
+      };
+      await fs.promises.writeFile(STORE_FILE, JSON.stringify(serialized), 'utf8');
+    } catch (err) {
+      console.warn('Failed to persist store.json:', err?.message || err);
+    }
+  }, 500);
+}
+
+function loadStore() {
+  try {
+    if (!fs.existsSync(STORE_FILE)) return;
+    const raw = fs.readFileSync(STORE_FILE, 'utf8');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.rooms)) {
+      for (const r of data.rooms) {
+        if (!r?.id) continue;
+        rooms.set(r.id, {
+          id: r.id,
+          title: r.title || `방 #${r.id}`,
+          passwordHash: r.passwordHash || null,
+          ownerId: r.ownerId || null,
+          createdAt: r.createdAt || Date.now(),
+          messages: Array.isArray(r.messages) ? r.messages.slice(-MAX_MESSAGES_PER_ROOM) : [],
+          members: new Map(),
+        });
+      }
+    }
+    if (Array.isArray(data.profiles)) {
+      for (const [k, v] of data.profiles) {
+        if (k && v) userProfiles.set(k, v);
+      }
+    }
+    if (Array.isArray(data.friends)) {
+      for (const [k, v] of data.friends) {
+        if (k && Array.isArray(v)) userFriends.set(k, v);
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load store.json:', err?.message || err);
+  }
+}
+
+loadStore();
 
 function extractBearer(req) {
   const h = String(req.headers.authorization || '');
@@ -76,6 +141,7 @@ function getOrCreateRoom(roomId, opts = {}) {
       messages: [],
       members: new Map(),
     });
+    scheduleSaveStore();
   }
   return rooms.get(id);
 }
@@ -512,6 +578,7 @@ io.on('connection', (socket) => {
     if (room.messages.length > MAX_MESSAGES_PER_ROOM) {
       room.messages.shift();
     }
+    scheduleSaveStore();
 
     io.to(room.id).emit('chat:message', msg);
     ack?.({ ok: true, id: msg.id });
@@ -539,6 +606,7 @@ io.on('connection', (socket) => {
     if (!isSender && !isOwner) return;
 
     room.messages.splice(idx, 1);
+    scheduleSaveStore();
     io.to(room.id).emit('chat:deleted', { messageId: target.id });
   });
 
