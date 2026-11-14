@@ -2,6 +2,21 @@ const RTC_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
 };
 
@@ -70,13 +85,23 @@ export function initCallManager({ getRoomId, getNickname }) {
       try {
         if (data.sdp) {
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          while (entry.pendingCandidates.length > 0) {
+            const cand = entry.pendingCandidates.shift();
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {}
+          }
           if (data.sdp.type === 'offer') {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             s.emit('call:signal', { to: from, data: { sdp: pc.localDescription } });
           }
         } else if (data.candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } else {
+            entry.pendingCandidates.push(data.candidate);
+          }
         }
       } catch (err) {
         console.warn('WebRTC signaling error:', err);
@@ -106,6 +131,19 @@ export function initCallManager({ getRoomId, getNickname }) {
     return s;
   }
 
+  function ensurePeerAudio(entry) {
+    if (entry.audioEl) return entry.audioEl;
+    const audio = document.createElement('audio');
+    audio.autoplay = true;
+    audio.playsInline = true;
+    audio.srcObject = entry.stream;
+    audio.style.display = 'none';
+    el.callStage.appendChild(audio);
+    audio.play().catch(() => {});
+    entry.audioEl = audio;
+    return audio;
+  }
+
   async function createPeerConnection(peerId, info, isInitiator) {
     if (state.peers.has(peerId)) {
       return state.peers.get(peerId);
@@ -120,8 +158,12 @@ export function initCallManager({ getRoomId, getNickname }) {
       micEnabled: info?.micEnabled !== false,
       camEnabled: Boolean(info?.camEnabled),
       stream: remoteStream,
+      pendingCandidates: [],
+      audioEl: null,
+      connState: 'connecting',
     };
     state.peers.set(peerId, entry);
+    ensurePeerAudio(entry);
 
     if (state.localStream) {
       for (const track of state.localStream.getTracks()) {
@@ -136,6 +178,9 @@ export function initCallManager({ getRoomId, getNickname }) {
           remoteStream.addTrack(t);
         }
       }
+      const audio = ensurePeerAudio(entry);
+      if (audio.srcObject !== remoteStream) audio.srcObject = remoteStream;
+      audio.play().catch(() => {});
       renderGrid();
     };
 
@@ -149,10 +194,18 @@ export function initCallManager({ getRoomId, getNickname }) {
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      entry.connState = pc.connectionState;
+      if (pc.connectionState === 'connected') {
+        const audio = ensurePeerAudio(entry);
+        audio.play().catch(() => {});
+      } else if (pc.connectionState === 'failed') {
+        try {
+          pc.restartIce();
+        } catch {}
+      } else if (pc.connectionState === 'closed') {
         removePeer(peerId);
-        renderGrid();
       }
+      renderGrid();
     };
 
     if (isInitiator) {
@@ -174,6 +227,12 @@ export function initCallManager({ getRoomId, getNickname }) {
   function removePeer(peerId) {
     const entry = state.peers.get(peerId);
     if (!entry) return;
+    if (entry.audioEl) {
+      try {
+        entry.audioEl.srcObject = null;
+        entry.audioEl.remove();
+      } catch {}
+    }
     try {
       entry.pc.close();
     } catch {}
@@ -454,7 +513,7 @@ export function initCallManager({ getRoomId, getNickname }) {
     const video = document.createElement('video');
     video.autoplay = true;
     video.playsInline = true;
-    if (isSelf) video.muted = true;
+    video.muted = true; // Audio is played via dedicated persistent <audio> element per peer
     if (stream) video.srcObject = stream;
     tile.appendChild(video);
 
