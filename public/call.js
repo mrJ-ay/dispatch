@@ -170,6 +170,9 @@ export function initCallManager({ getRoomId, getNickname }) {
         pc.addTrack(track, state.localStream);
       }
     }
+    if (isInitiator && (!state.localStream || state.localStream.getVideoTracks().length === 0)) {
+      pc.addTransceiver('video', { direction: 'recvonly' });
+    }
 
     pc.ontrack = (event) => {
       const streams = event.streams && event.streams.length > 0 ? event.streams : [new MediaStream([event.track])];
@@ -177,6 +180,10 @@ export function initCallManager({ getRoomId, getNickname }) {
         if (!remoteStream.getTracks().some((existing) => existing.id === t.id)) {
           remoteStream.addTrack(t);
         }
+      }
+      if (event.track) {
+        event.track.onunmute = () => renderGrid();
+        event.track.onmute = () => renderGrid();
       }
       const audio = ensurePeerAudio(entry);
       if (audio.srcObject !== remoteStream) audio.srcObject = remoteStream;
@@ -372,20 +379,7 @@ export function initCallManager({ getRoomId, getNickname }) {
       state.localStream.addTrack(newTrack);
       state.camEnabled = true;
 
-      for (const entry of state.peers.values()) {
-        const sender = entry.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(newTrack);
-        } else {
-          entry.pc.addTrack(newTrack, state.localStream);
-          const offer = await entry.pc.createOffer();
-          await entry.pc.setLocalDescription(offer);
-          state.socket.emit('call:signal', {
-            to: entry.socketId,
-            data: { sdp: entry.pc.localDescription },
-          });
-        }
-      }
+      await replaceVideoTrackForPeers(newTrack);
 
       emitMediaState();
       updateControlButtons();
@@ -444,9 +438,9 @@ export function initCallManager({ getRoomId, getNickname }) {
       await replaceVideoTrackForPeers(camTrack);
     } else {
       for (const entry of state.peers.values()) {
-        const sender = entry.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(null);
+        const vt = entry.pc.getTransceivers().find((t) => t.receiver?.track?.kind === 'video' || t.sender?.track?.kind === 'video');
+        if (vt) {
+          await vt.sender.replaceTrack(null);
         }
       }
     }
@@ -458,9 +452,18 @@ export function initCallManager({ getRoomId, getNickname }) {
 
   async function replaceVideoTrackForPeers(track) {
     for (const entry of state.peers.values()) {
-      const sender = entry.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
-      if (sender) {
-        await sender.replaceTrack(track);
+      const vt = entry.pc.getTransceivers().find((t) => t.receiver?.track?.kind === 'video' || t.sender?.track?.kind === 'video');
+      if (vt) {
+        await vt.sender.replaceTrack(track);
+        if (vt.direction === 'recvonly' || vt.direction === 'inactive') {
+          vt.direction = 'sendrecv';
+          const offer = await entry.pc.createOffer();
+          await entry.pc.setLocalDescription(offer);
+          state.socket.emit('call:signal', {
+            to: entry.socketId,
+            data: { sdp: entry.pc.localDescription },
+          });
+        }
       } else {
         entry.pc.addTrack(track, state.localStream);
         const offer = await entry.pc.createOffer();
@@ -514,7 +517,10 @@ export function initCallManager({ getRoomId, getNickname }) {
     video.autoplay = true;
     video.playsInline = true;
     video.muted = true; // Audio is played via dedicated persistent <audio> element per peer
-    if (stream) video.srcObject = stream;
+    if (stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
     tile.appendChild(video);
 
     const avatarOverlay = document.createElement('div');
@@ -560,7 +566,8 @@ export function initCallManager({ getRoomId, getNickname }) {
     );
 
     for (const peer of state.peers.values()) {
-      const hasLiveVideo = peer.camEnabled && peer.stream && peer.stream.getVideoTracks().length > 0;
+      const vTracks = peer.stream ? peer.stream.getVideoTracks() : [];
+      const hasLiveVideo = vTracks.some((t) => t.readyState === 'live' && !t.muted) || (peer.camEnabled && vTracks.length > 0);
       el.callGrid.appendChild(
         buildTile({
           id: peer.socketId,
