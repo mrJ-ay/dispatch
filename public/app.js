@@ -16,7 +16,17 @@ import { initCallManager } from '/call.js';
     pkceState: 'dispatch_pkce_state',
     lastRoom: 'dispatch_last_room',
     msgPrefix: 'dispatch_msgs_',
+    clientId: 'dispatch_client_id',
   };
+
+  function getClientId() {
+    let id = localStorage.getItem(STORAGE_KEYS.clientId);
+    if (!id) {
+      id = (crypto?.randomUUID ? crypto.randomUUID() : `c_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+      localStorage.setItem(STORAGE_KEYS.clientId, id);
+    }
+    return id;
+  }
 
   const state = {
     config: {
@@ -695,8 +705,10 @@ import { initCallManager } from '/call.js';
 
   function isMyMessage(msg) {
     const s = getSenderInfo(msg);
+    const myClientId = state.me?.clientId || getClientId();
     return Boolean(
       (state.me?.socketId && s.socketId === state.me.socketId) ||
+      (myClientId && s.clientId && s.clientId === myClientId) ||
       (state.me?.userId && s.userId && s.userId === state.me.userId)
     );
   }
@@ -1018,6 +1030,7 @@ import { initCallManager } from '/call.js';
           title,
           nickname: cleanNick,
           password,
+          clientId: getClientId(),
           token: state.token || undefined,
           avatarUrl: state.profile?.avatarUrl || '',
           avatarColor: state.profile?.avatarColor || '',

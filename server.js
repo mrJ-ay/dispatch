@@ -638,8 +638,10 @@ io.on('connection', (socket) => {
     }
 
     currentRoomId = room.id;
+    const clientId = String(payload.clientId || '').trim().slice(0, 64) || null;
     currentMember = {
       socketId: socket.id,
+      clientId,
       nickname,
       verified: Boolean(verifiedUser),
       userId: verifiedUser?.userId || null,
@@ -717,6 +719,7 @@ io.on('connection', (socket) => {
       roomId: room.id,
       sender: {
         socketId: currentMember.socketId,
+        clientId: currentMember.clientId || null,
         nickname: currentMember.nickname,
         verified: currentMember.verified,
         userId: currentMember.userId,
@@ -758,7 +761,10 @@ io.on('connection', (socket) => {
     if (idx === -1) return;
 
     const target = room.messages[idx];
-    const isSender = target.sender.socketId === socket.id || (currentMember.userId && target.sender.userId === currentMember.userId);
+    const isSender =
+      target.sender.socketId === socket.id ||
+      (currentMember.clientId && target.sender.clientId === currentMember.clientId) ||
+      (currentMember.userId && target.sender.userId === currentMember.userId);
     const isOwner = Boolean(room.ownerId && currentMember.userId && room.ownerId === currentMember.userId);
     if (!isSender && !isOwner) return;
 
