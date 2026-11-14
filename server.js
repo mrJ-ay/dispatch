@@ -22,6 +22,10 @@ const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   maxHttpBufferSize: 20 * 1024 * 1024,
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+  },
 });
 
 app.use(express.json());
@@ -553,6 +557,78 @@ io.on('connection', (socket) => {
       });
       broadcastMembers(room);
     }
+  });
+});
+
+// =========================================================
+// WebRTC Signaling Namespace (/call) for KINECTA Call
+// =========================================================
+const callRooms = new Map(); // roomId -> Map<socketId, { socketId, nickname, micEnabled, camEnabled }>
+const callNs = io.of('/call');
+
+callNs.on('connection', (socket) => {
+  let joinedRoom = null;
+
+  function leaveCurrentRoom() {
+    if (!joinedRoom || !callRooms.has(joinedRoom)) return;
+    const members = callRooms.get(joinedRoom);
+    members.delete(socket.id);
+    socket.to(joinedRoom).emit('call:peer-left', { socketId: socket.id });
+    socket.leave(joinedRoom);
+    if (members.size === 0) callRooms.delete(joinedRoom);
+    joinedRoom = null;
+  }
+
+  socket.on('call:join', (payload = {}) => {
+    const roomId = normalizeRoomId(payload.roomId || '');
+    if (!roomId) return;
+    leaveCurrentRoom();
+
+    const nickname = String(payload.nickname || '익명').trim().slice(0, 24) || '익명';
+    const micEnabled = payload.micEnabled !== false;
+    const camEnabled = Boolean(payload.camEnabled);
+
+    if (!callRooms.has(roomId)) callRooms.set(roomId, new Map());
+    const members = callRooms.get(roomId);
+    const existingPeers = Array.from(members.values());
+
+    const selfInfo = { socketId: socket.id, nickname, micEnabled, camEnabled };
+    members.set(socket.id, selfInfo);
+    joinedRoom = roomId;
+    socket.join(roomId);
+
+    socket.emit('call:peers', { roomId, peers: existingPeers });
+    socket.to(roomId).emit('call:peer-joined', selfInfo);
+  });
+
+  socket.on('call:signal', (payload = {}) => {
+    const to = String(payload.to || '');
+    if (!to || !payload.data) return;
+    callNs.to(to).emit('call:signal', {
+      from: socket.id,
+      data: payload.data,
+    });
+  });
+
+  socket.on('call:media-state', (payload = {}) => {
+    if (!joinedRoom || !callRooms.has(joinedRoom)) return;
+    const info = callRooms.get(joinedRoom).get(socket.id);
+    if (!info) return;
+    if (typeof payload.micEnabled === 'boolean') info.micEnabled = payload.micEnabled;
+    if (typeof payload.camEnabled === 'boolean') info.camEnabled = payload.camEnabled;
+    socket.to(joinedRoom).emit('call:media-state', {
+      socketId: socket.id,
+      micEnabled: info.micEnabled,
+      camEnabled: info.camEnabled,
+    });
+  });
+
+  socket.on('call:leave', () => {
+    leaveCurrentRoom();
+  });
+
+  socket.on('disconnect', () => {
+    leaveCurrentRoom();
   });
 });
 
