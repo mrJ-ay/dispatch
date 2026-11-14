@@ -2,21 +2,7 @@ const RTC_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
+    { urls: 'stun:stun.cloudflare.com:3478' },
   ],
 };
 
@@ -54,12 +40,24 @@ export function initCallManager({ getRoomId, getNickname }) {
     lastStatus: null,
     startedAt: 0,
     timerId: null,
+    relayActive: false,
+    relayCtx: null,
+    relaySource: null,
+    relayProcessor: null,
+    relayNextTime: new Map(), // socketId -> next play timestamp
   };
 
   function ensureCallSocket() {
     if (state.socket) return state.socket;
     const s = window.io('/call', {
       transports: ['websocket', 'polling'],
+    });
+
+    s.on('call:relay-audio', ({ from, pcm, sampleRate }) => {
+      if (!state.inCall || !from || !pcm) return;
+      const entry = state.peers.get(from);
+      if (entry && entry.connState === 'connected') return; // P2P active, ignore relay
+      playRelayedPcm(from, pcm, sampleRate || 16000);
     });
 
     s.on('call:peers', async ({ peers }) => {
@@ -240,14 +238,25 @@ export function initCallManager({ getRoomId, getNickname }) {
       }
     };
 
-    pc.onconnectionstatechange = () => {
+    pc.onconnectionstatechange = async () => {
       entry.connState = pc.connectionState;
       if (pc.connectionState === 'connected') {
+        entry.relayed = false;
         ensurePeerAudio(entry);
       } else if (pc.connectionState === 'failed') {
-        try {
-          pc.restartIce();
-        } catch {}
+        if (!entry.iceRetried && state.socket?.id && state.socket.id < peerId) {
+          entry.iceRetried = true;
+          try {
+            const offer = await pc.createOffer({ iceRestart: true });
+            await pc.setLocalDescription(offer);
+            state.socket.emit('call:signal', {
+              to: peerId,
+              data: { sdp: pc.localDescription },
+            });
+          } catch {}
+        }
+        entry.relayed = true;
+        startAudioRelay();
       } else if (pc.connectionState === 'closed') {
         removePeer(peerId);
       }
@@ -348,7 +357,90 @@ export function initCallManager({ getRoomId, getNickname }) {
     renderGrid();
   }
 
+  function startAudioRelay() {
+    if (state.relayActive || !state.localStream || !state.socket) return;
+    if (state.localStream.getAudioTracks().length === 0) return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+
+    try {
+      const ctx = state.relayCtx || new AudioCtx({ sampleRate: 16000 });
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const source = ctx.createMediaStreamSource(new MediaStream(state.localStream.getAudioTracks()));
+      const processor = ctx.createScriptProcessor(2048, 1, 1);
+
+      processor.onaudioprocess = (ev) => {
+        if (!state.inCall || !state.micEnabled || !state.relayActive || !state.socket?.connected) return;
+        const hasRelayedPeer = Array.from(state.peers.values()).some((p) => p.connState !== 'connected');
+        if (!hasRelayedPeer) return;
+        const input = ev.inputBuffer.getChannelData(0);
+        const pcm = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        state.socket.emit('call:relay-audio', {
+          pcm: pcm.buffer,
+          sampleRate: ctx.sampleRate,
+        });
+      };
+
+      const silentGain = ctx.createGain();
+      silentGain.gain.value = 0;
+      source.connect(processor);
+      processor.connect(silentGain);
+      silentGain.connect(ctx.destination);
+
+      state.relayCtx = ctx;
+      state.relaySource = source;
+      state.relayProcessor = processor;
+      state.relayActive = true;
+    } catch (err) {
+      console.warn('Audio relay init failed:', err);
+    }
+  }
+
+  function stopAudioRelay() {
+    state.relayActive = false;
+    state.relayNextTime.clear();
+    try {
+      state.relayProcessor?.disconnect();
+    } catch {}
+    try {
+      state.relaySource?.disconnect();
+    } catch {}
+    state.relayProcessor = null;
+    state.relaySource = null;
+  }
+
+  function playRelayedPcm(peerId, rawPcm, sampleRate) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    try {
+      const ctx = state.relayCtx || new AudioCtx({ sampleRate: sampleRate || 16000 });
+      state.relayCtx = ctx;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => showAudioUnlockButton());
+      }
+      const int16 = new Int16Array(rawPcm);
+      if (int16.length === 0) return;
+      const buf = ctx.createBuffer(1, int16.length, sampleRate || 16000);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < int16.length; i++) {
+        ch[i] = int16[i] / 0x8000;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      const now = ctx.currentTime;
+      const next = Math.max(now + 0.02, state.relayNextTime.get(peerId) || 0);
+      src.start(next);
+      state.relayNextTime.set(peerId, next + buf.duration);
+    } catch {}
+  }
+
   function cleanupCallState() {
+    stopAudioRelay();
     if (state.timerId) {
       clearInterval(state.timerId);
       state.timerId = null;
@@ -547,7 +639,7 @@ export function initCallManager({ getRoomId, getNickname }) {
     el.callScreenBtn.textContent = state.isScreenSharing ? '🛑 공유 중지' : '🖥️ 화면 공유';
   }
 
-  function buildTile({ id, nickname, stream, isSelf, micEnabled, camEnabled, connState }) {
+  function buildTile({ id, nickname, stream, isSelf, micEnabled, camEnabled, connState, relayed }) {
     const tile = document.createElement('div');
     tile.className = `call-tile ${camEnabled ? 'has-video' : 'audio-only'}`;
     tile.dataset.peerId = id;
@@ -577,7 +669,10 @@ export function initCallManager({ getRoomId, getNickname }) {
     const label = document.createElement('div');
     label.className = 'call-tile-label';
     const nameSpan = document.createElement('span');
-    const connSuffix = !isSelf && connState && connState !== 'connected' ? ` (${connState === 'failed' ? '연결 실패' : '연결 중…'})` : '';
+    let connSuffix = '';
+    if (!isSelf && connState && connState !== 'connected') {
+      connSuffix = relayed ? ' (음성 릴레이)' : (connState === 'failed' ? ' (연결 실패)' : ' (연결 중…)');
+    }
     nameSpan.textContent = isSelf ? `${nickname} (나)` : `${nickname}${connSuffix}`;
     label.appendChild(nameSpan);
 
@@ -620,6 +715,7 @@ export function initCallManager({ getRoomId, getNickname }) {
           micEnabled: peer.micEnabled,
           camEnabled: hasLiveVideo,
           connState: peer.connState,
+          relayed: Boolean(peer.relayed),
         })
       );
     }

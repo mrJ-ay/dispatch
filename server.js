@@ -881,6 +881,15 @@ callNs.on('connection', (socket) => {
     });
   });
 
+  socket.on('call:relay-audio', (payload = {}) => {
+    if (!joinedRoom || !payload.pcm) return;
+    socket.to(joinedRoom).emit('call:relay-audio', {
+      from: socket.id,
+      pcm: payload.pcm,
+      sampleRate: Number(payload.sampleRate) || 16000,
+    });
+  });
+
   socket.on('call:leave', () => {
     leaveCurrentRoom();
   });
