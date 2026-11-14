@@ -890,6 +890,14 @@ callNs.on('connection', (socket) => {
     });
   });
 
+  socket.on('call:relay-video', (payload = {}) => {
+    if (!joinedRoom) return;
+    socket.to(joinedRoom).emit('call:relay-video', {
+      from: socket.id,
+      frame: typeof payload.frame === 'string' ? payload.frame.slice(0, 180000) : null,
+    });
+  });
+
   socket.on('call:leave', () => {
     leaveCurrentRoom();
   });

@@ -45,6 +45,9 @@ export function initCallManager({ getRoomId, getNickname }) {
     relaySource: null,
     relayProcessor: null,
     relayNextTime: new Map(), // socketId -> next play timestamp
+    relayVideoTimer: null,
+    relayCaptureVideo: null,
+    relayCaptureCanvas: null,
   };
 
   function ensureCallSocket() {
@@ -58,6 +61,30 @@ export function initCallManager({ getRoomId, getNickname }) {
       const entry = state.peers.get(from);
       if (entry && entry.connState === 'connected') return; // P2P active, ignore relay
       playRelayedPcm(from, pcm, sampleRate || 16000);
+    });
+
+    s.on('call:relay-video', ({ from, frame }) => {
+      if (!state.inCall || !from) return;
+      const entry = state.peers.get(from);
+      if (!entry || entry.connState === 'connected') return;
+      entry.relayFrame = frame || null;
+      const tile = el.callGrid.querySelector(`[data-peer-id="${CSS.escape(from)}"]`);
+      if (tile) {
+        const img = tile.querySelector('img.call-relay-img');
+        if (frame && img) {
+          img.src = frame;
+          img.hidden = false;
+          tile.classList.add('has-video');
+          tile.classList.remove('audio-only');
+        } else {
+          if (img) {
+            img.hidden = true;
+            img.removeAttribute('src');
+          }
+          tile.classList.remove('has-video');
+          tile.classList.add('audio-only');
+        }
+      }
     });
 
     s.on('call:peers', async ({ peers }) => {
@@ -395,12 +422,77 @@ export function initCallManager({ getRoomId, getNickname }) {
       state.relaySource = source;
       state.relayProcessor = processor;
       state.relayActive = true;
+      startVideoRelay();
     } catch (err) {
       console.warn('Audio relay init failed:', err);
     }
   }
 
+  function startVideoRelay() {
+    if (state.relayVideoTimer) return;
+    let lastSentEmpty = false;
+    state.relayVideoTimer = setInterval(() => {
+      if (!state.inCall || !state.socket?.connected) return;
+      const hasRelayedPeer = Array.from(state.peers.values()).some((p) => p.connState !== 'connected');
+      if (!hasRelayedPeer) return;
+
+      const activeStream = state.isScreenSharing && state.screenStream ? state.screenStream : state.localStream;
+      const vTrack = activeStream?.getVideoTracks()?.[0];
+      if (!state.camEnabled || !vTrack || vTrack.readyState !== 'live') {
+        if (!lastSentEmpty) {
+          state.socket.emit('call:relay-video', { frame: null });
+          lastSentEmpty = true;
+        }
+        return;
+      }
+
+      try {
+        if (!state.relayCaptureVideo) {
+          const v = document.createElement('video');
+          v.muted = true;
+          v.playsInline = true;
+          v.autoplay = true;
+          state.relayCaptureVideo = v;
+        }
+        if (state.relayCaptureVideo.srcObject !== activeStream) {
+          state.relayCaptureVideo.srcObject = activeStream;
+          state.relayCaptureVideo.play().catch(() => {});
+        }
+        const vw = state.relayCaptureVideo.videoWidth;
+        const vh = state.relayCaptureVideo.videoHeight;
+        if (!vw || !vh) return;
+
+        const targetW = Math.min(480, vw);
+        const targetH = Math.round((vh * targetW) / vw);
+        if (!state.relayCaptureCanvas) {
+          state.relayCaptureCanvas = document.createElement('canvas');
+        }
+        state.relayCaptureCanvas.width = targetW;
+        state.relayCaptureCanvas.height = targetH;
+        const ctx2d = state.relayCaptureCanvas.getContext('2d');
+        if (!ctx2d) return;
+        ctx2d.drawImage(state.relayCaptureVideo, 0, 0, targetW, targetH);
+        const frame = state.relayCaptureCanvas.toDataURL('image/jpeg', 0.55);
+        state.socket.emit('call:relay-video', { frame });
+        lastSentEmpty = false;
+      } catch {}
+    }, 120);
+  }
+
+  function stopVideoRelay() {
+    if (state.relayVideoTimer) {
+      clearInterval(state.relayVideoTimer);
+      state.relayVideoTimer = null;
+    }
+    if (state.relayCaptureVideo) {
+      state.relayCaptureVideo.srcObject = null;
+      state.relayCaptureVideo = null;
+    }
+    state.relayCaptureCanvas = null;
+  }
+
   function stopAudioRelay() {
+    stopVideoRelay();
     state.relayActive = false;
     state.relayNextTime.clear();
     try {
@@ -639,7 +731,7 @@ export function initCallManager({ getRoomId, getNickname }) {
     el.callScreenBtn.textContent = state.isScreenSharing ? '🛑 공유 중지' : '🖥️ 화면 공유';
   }
 
-  function buildTile({ id, nickname, stream, isSelf, micEnabled, camEnabled, connState, relayed }) {
+  function buildTile({ id, nickname, stream, isSelf, micEnabled, camEnabled, connState, relayed, relayFrame }) {
     const tile = document.createElement('div');
     tile.className = `call-tile ${camEnabled ? 'has-video' : 'audio-only'}`;
     tile.dataset.peerId = id;
@@ -657,6 +749,19 @@ export function initCallManager({ getRoomId, getNickname }) {
     }
     tile.appendChild(video);
 
+    if (!isSelf) {
+      const relayImg = document.createElement('img');
+      relayImg.className = 'call-relay-img';
+      relayImg.alt = nickname;
+      if (relayFrame) {
+        relayImg.src = relayFrame;
+        relayImg.hidden = false;
+      } else {
+        relayImg.hidden = true;
+      }
+      tile.appendChild(relayImg);
+    }
+
     const avatarOverlay = document.createElement('div');
     avatarOverlay.className = 'call-tile-avatar';
     const initial = (nickname || '?').slice(0, 1).toUpperCase();
@@ -671,7 +776,7 @@ export function initCallManager({ getRoomId, getNickname }) {
     const nameSpan = document.createElement('span');
     let connSuffix = '';
     if (!isSelf && connState && connState !== 'connected') {
-      connSuffix = relayed ? ' (음성 릴레이)' : (connState === 'failed' ? ' (연결 실패)' : ' (연결 중…)');
+      connSuffix = relayed ? ' (릴레이 연결)' : (connState === 'failed' ? ' (연결 실패)' : ' (연결 중…)');
     }
     nameSpan.textContent = isSelf ? `${nickname} (나)` : `${nickname}${connSuffix}`;
     label.appendChild(nameSpan);
@@ -705,7 +810,10 @@ export function initCallManager({ getRoomId, getNickname }) {
 
     for (const peer of state.peers.values()) {
       const vTracks = peer.stream ? peer.stream.getVideoTracks() : [];
-      const hasLiveVideo = vTracks.some((t) => t.readyState === 'live' && !t.muted) || (peer.camEnabled && vTracks.length > 0);
+      const hasLiveVideo =
+        Boolean(peer.relayFrame) ||
+        vTracks.some((t) => t.readyState === 'live' && !t.muted) ||
+        (peer.camEnabled && vTracks.length > 0);
       el.callGrid.appendChild(
         buildTile({
           id: peer.socketId,
@@ -716,6 +824,7 @@ export function initCallManager({ getRoomId, getNickname }) {
           camEnabled: hasLiveVideo,
           connState: peer.connState,
           relayed: Boolean(peer.relayed),
+          relayFrame: peer.relayFrame || null,
         })
       );
     }
