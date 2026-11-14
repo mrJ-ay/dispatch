@@ -132,16 +132,49 @@ export function initCallManager({ getRoomId, getNickname }) {
   }
 
   function ensurePeerAudio(entry) {
-    if (entry.audioEl) return entry.audioEl;
-    const audio = document.createElement('audio');
-    audio.autoplay = true;
-    audio.playsInline = true;
-    audio.srcObject = entry.stream;
-    audio.style.display = 'none';
-    el.callStage.appendChild(audio);
-    audio.play().catch(() => {});
-    entry.audioEl = audio;
-    return audio;
+    if (!entry.audioEl) {
+      const audio = document.createElement('audio');
+      audio.autoplay = true;
+      audio.playsInline = true;
+      audio.style.display = 'none';
+      el.callStage.appendChild(audio);
+      entry.audioEl = audio;
+    }
+    const audioTracks = entry.stream ? entry.stream.getAudioTracks() : [];
+    if (audioTracks.length > 0) {
+      entry.audioEl.srcObject = new MediaStream(audioTracks);
+      entry.audioEl.muted = false;
+      entry.audioEl.volume = 1;
+      entry.audioEl.play().catch((err) => {
+        if (err?.name === 'NotAllowedError') {
+          showAudioUnlockButton();
+        }
+      });
+    }
+    return entry.audioEl;
+  }
+
+  function showAudioUnlockButton() {
+    let btn = document.getElementById('callAudioUnlockBtn');
+    if (btn) {
+      btn.hidden = false;
+      return;
+    }
+    btn = document.createElement('button');
+    btn.id = 'callAudioUnlockBtn';
+    btn.type = 'button';
+    btn.className = 'call-ctrl-btn is-muted';
+    btn.textContent = '🔇 소리 켜기 (클릭)';
+    btn.addEventListener('click', () => {
+      for (const peer of state.peers.values()) {
+        if (peer.audioEl) {
+          peer.audioEl.play().catch(() => {});
+        }
+      }
+      btn.hidden = true;
+    });
+    const controls = el.callStage.querySelector('.call-controls');
+    if (controls) controls.prepend(btn);
   }
 
   async function createPeerConnection(peerId, info, isInitiator) {
@@ -163,7 +196,6 @@ export function initCallManager({ getRoomId, getNickname }) {
       connState: 'connecting',
     };
     state.peers.set(peerId, entry);
-    ensurePeerAudio(entry);
 
     if (state.localStream) {
       for (const track of state.localStream.getTracks()) {
@@ -175,19 +207,27 @@ export function initCallManager({ getRoomId, getNickname }) {
     }
 
     pc.ontrack = (event) => {
-      const streams = event.streams && event.streams.length > 0 ? event.streams : [new MediaStream([event.track])];
-      for (const t of streams[0].getTracks()) {
+      const incomingTracks =
+        event.streams && event.streams.length > 0
+          ? event.streams[0].getTracks()
+          : event.track
+            ? [event.track]
+            : [];
+      for (const t of incomingTracks) {
         if (!remoteStream.getTracks().some((existing) => existing.id === t.id)) {
           remoteStream.addTrack(t);
         }
       }
       if (event.track) {
-        event.track.onunmute = () => renderGrid();
+        event.track.onunmute = () => {
+          if (event.track.kind === 'audio') ensurePeerAudio(entry);
+          renderGrid();
+        };
         event.track.onmute = () => renderGrid();
       }
-      const audio = ensurePeerAudio(entry);
-      if (audio.srcObject !== remoteStream) audio.srcObject = remoteStream;
-      audio.play().catch(() => {});
+      if (remoteStream.getAudioTracks().length > 0) {
+        ensurePeerAudio(entry);
+      }
       renderGrid();
     };
 
@@ -203,8 +243,7 @@ export function initCallManager({ getRoomId, getNickname }) {
     pc.onconnectionstatechange = () => {
       entry.connState = pc.connectionState;
       if (pc.connectionState === 'connected') {
-        const audio = ensurePeerAudio(entry);
-        audio.play().catch(() => {});
+        ensurePeerAudio(entry);
       } else if (pc.connectionState === 'failed') {
         try {
           pc.restartIce();
@@ -508,7 +547,7 @@ export function initCallManager({ getRoomId, getNickname }) {
     el.callScreenBtn.textContent = state.isScreenSharing ? '🛑 공유 중지' : '🖥️ 화면 공유';
   }
 
-  function buildTile({ id, nickname, stream, isSelf, micEnabled, camEnabled }) {
+  function buildTile({ id, nickname, stream, isSelf, micEnabled, camEnabled, connState }) {
     const tile = document.createElement('div');
     tile.className = `call-tile ${camEnabled ? 'has-video' : 'audio-only'}`;
     tile.dataset.peerId = id;
@@ -535,7 +574,8 @@ export function initCallManager({ getRoomId, getNickname }) {
     const label = document.createElement('div');
     label.className = 'call-tile-label';
     const nameSpan = document.createElement('span');
-    nameSpan.textContent = isSelf ? `${nickname} (나)` : nickname;
+    const connSuffix = !isSelf && connState && connState !== 'connected' ? ` (${connState === 'failed' ? '연결 실패' : '연결 중…'})` : '';
+    nameSpan.textContent = isSelf ? `${nickname} (나)` : `${nickname}${connSuffix}`;
     label.appendChild(nameSpan);
 
     if (!micEnabled) {
@@ -576,6 +616,7 @@ export function initCallManager({ getRoomId, getNickname }) {
           isSelf: false,
           micEnabled: peer.micEnabled,
           camEnabled: hasLiveVideo,
+          connState: peer.connState,
         })
       );
     }
