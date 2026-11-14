@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import multer from 'multer';
+import pg from 'pg';
 import { Server as SocketIOServer } from 'socket.io';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,10 +17,18 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const PORT = Number(process.env.PORT || 5700);
+const DATABASE_URL = process.env.DATABASE_URL || '';
 const ONEID_URL = (process.env.ONEID_URL || 'https://oneid-ruddy.vercel.app').replace(/\/+$/, '');
 const ONEID_CLIENT_ID = process.env.ONEID_CLIENT_ID || 'dispatch';
 const MAX_FILE_BYTES = 15 * 1024 * 1024; // 15MB
 const MAX_MESSAGES_PER_ROOM = 200;
+
+const pool = DATABASE_URL
+  ? new pg.Pool({
+      connectionString: DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    })
+  : null;
 
 const app = express();
 const server = http.createServer(app);
@@ -45,7 +54,7 @@ const onlineUsers = new Map();
 
 let saveTimer = null;
 function scheduleSaveStore() {
-  if (saveTimer) return;
+  if (pool || saveTimer) return;
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
@@ -103,7 +112,147 @@ function loadStore() {
   }
 }
 
-loadStore();
+async function initDb() {
+  if (!pool) {
+    loadStore();
+    return;
+  }
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS dispatch_rooms (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        password_hash TEXT,
+        owner_id TEXT,
+        created_at BIGINT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS dispatch_messages (
+        id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL REFERENCES dispatch_rooms(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        sender JSONB,
+        text TEXT,
+        reply_to JSONB,
+        attachment JSONB,
+        created_at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dispatch_messages_room_created
+        ON dispatch_messages(room_id, created_at);
+      CREATE TABLE IF NOT EXISTS dispatch_profiles (
+        user_id TEXT PRIMARY KEY,
+        data JSONB NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS dispatch_friends (
+        user_id TEXT PRIMARY KEY,
+        data JSONB NOT NULL
+      );
+    `);
+
+    const roomRows = await pool.query('SELECT id, title, password_hash, owner_id, created_at FROM dispatch_rooms');
+    for (const r of roomRows.rows) {
+      rooms.set(r.id, {
+        id: r.id,
+        title: r.title,
+        passwordHash: r.password_hash || null,
+        ownerId: r.owner_id || null,
+        createdAt: Number(r.created_at) || Date.now(),
+        messages: [],
+        members: new Map(),
+      });
+    }
+
+    const msgRows = await pool.query(`
+      SELECT id, room_id, type, sender, text, reply_to, attachment, created_at
+      FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) AS rn
+        FROM dispatch_messages
+      ) sub
+      WHERE rn <= $1
+      ORDER BY created_at ASC
+    `, [MAX_MESSAGES_PER_ROOM]);
+
+    for (const m of msgRows.rows) {
+      const room = rooms.get(m.room_id);
+      if (!room) continue;
+      room.messages.push({
+        id: m.id,
+        type: m.type,
+        sender: m.sender || {},
+        text: m.text || '',
+        replyTo: m.reply_to || null,
+        attachment: m.attachment || null,
+        createdAt: Number(m.created_at) || Date.now(),
+      });
+    }
+
+    const profRows = await pool.query('SELECT user_id, data FROM dispatch_profiles');
+    for (const p of profRows.rows) {
+      if (p.user_id && p.data) userProfiles.set(p.user_id, p.data);
+    }
+
+    const friendRows = await pool.query('SELECT user_id, data FROM dispatch_friends');
+    for (const f of friendRows.rows) {
+      if (f.user_id && Array.isArray(f.data)) userFriends.set(f.user_id, f.data);
+    }
+
+    console.log(`Loaded ${rooms.size} rooms from Neon PostgreSQL`);
+  } catch (err) {
+    console.error('Failed to initialize Neon PostgreSQL:', err);
+  }
+}
+
+function dbUpsertRoom(room) {
+  if (!pool || !room) return;
+  pool.query(
+    `INSERT INTO dispatch_rooms (id, title, password_hash, owner_id, created_at)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, password_hash = EXCLUDED.password_hash, owner_id = EXCLUDED.owner_id`,
+    [room.id, room.title, room.passwordHash || null, room.ownerId || null, room.createdAt || Date.now()]
+  ).catch((err) => console.warn('dbUpsertRoom error:', err?.message || err));
+}
+
+function dbInsertMessage(roomId, msg) {
+  if (!pool || !roomId || !msg) return;
+  pool.query(
+    `INSERT INTO dispatch_messages (id, room_id, type, sender, text, reply_to, attachment, created_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8)
+     ON CONFLICT (id) DO NOTHING`,
+    [
+      msg.id,
+      roomId,
+      msg.type || 'text',
+      JSON.stringify(msg.sender || {}),
+      msg.text || '',
+      msg.replyTo ? JSON.stringify(msg.replyTo) : null,
+      msg.attachment ? JSON.stringify(msg.attachment) : null,
+      msg.createdAt || Date.now(),
+    ]
+  ).catch((err) => console.warn('dbInsertMessage error:', err?.message || err));
+}
+
+function dbDeleteMessage(messageId) {
+  if (!pool || !messageId) return;
+  pool.query('DELETE FROM dispatch_messages WHERE id = $1', [messageId])
+    .catch((err) => console.warn('dbDeleteMessage error:', err?.message || err));
+}
+
+function dbUpsertProfile(userId, profile) {
+  if (!pool || !userId || !profile) return;
+  pool.query(
+    `INSERT INTO dispatch_profiles (user_id, data) VALUES ($1, $2::jsonb)
+     ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data`,
+    [userId, JSON.stringify(profile)]
+  ).catch((err) => console.warn('dbUpsertProfile error:', err?.message || err));
+}
+
+function dbUpsertFriends(userId, friends) {
+  if (!pool || !userId) return;
+  pool.query(
+    `INSERT INTO dispatch_friends (user_id, data) VALUES ($1, $2::jsonb)
+     ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data`,
+    [userId, JSON.stringify(friends || [])]
+  ).catch((err) => console.warn('dbUpsertFriends error:', err?.message || err));
+}
 
 function extractBearer(req) {
   const h = String(req.headers.authorization || '');
@@ -141,6 +290,7 @@ function getOrCreateRoom(roomId, opts = {}) {
       messages: [],
       members: new Map(),
     });
+    dbUpsertRoom(rooms.get(id));
     scheduleSaveStore();
   }
   return rooms.get(id);
@@ -238,6 +388,8 @@ app.post('/api/profile', async (req, res) => {
     statusMsg: String(statusMsg || '').trim().slice(0, 60),
   };
   userProfiles.set(verifiedUser.userId, updated);
+  dbUpsertProfile(verifiedUser.userId, updated);
+  scheduleSaveStore();
   return res.json({ ok: true, profile: updated });
 });
 
@@ -295,6 +447,8 @@ app.post('/api/friends', async (req, res) => {
   if (!list.some((f) => f.id === friendId || f.nickname.toLowerCase() === friendNick.toLowerCase())) {
     list.unshift({ id: friendId, nickname: friendNick, addedAt: Date.now() });
     userFriends.set(verifiedUser.userId, list);
+    dbUpsertFriends(verifiedUser.userId, list);
+    scheduleSaveStore();
   }
   return res.status(201).json({ ok: true, friend: { id: friendId, nickname: friendNick } });
 });
@@ -307,6 +461,8 @@ app.delete('/api/friends/:id', async (req, res) => {
   const targetId = decodeURIComponent(String(req.params.id || ''));
   const list = (userFriends.get(verifiedUser.userId) || []).filter((f) => f.id !== targetId);
   userFriends.set(verifiedUser.userId, list);
+  dbUpsertFriends(verifiedUser.userId, list);
+  scheduleSaveStore();
   return res.json({ ok: true });
 });
 
@@ -578,6 +734,7 @@ io.on('connection', (socket) => {
     if (room.messages.length > MAX_MESSAGES_PER_ROOM) {
       room.messages.shift();
     }
+    dbInsertMessage(room.id, msg);
     scheduleSaveStore();
 
     io.to(room.id).emit('chat:message', msg);
@@ -606,6 +763,7 @@ io.on('connection', (socket) => {
     if (!isSender && !isOwner) return;
 
     room.messages.splice(idx, 1);
+    dbDeleteMessage(target.id);
     scheduleSaveStore();
     io.to(room.id).emit('chat:deleted', { messageId: target.id });
   });
@@ -726,6 +884,8 @@ callNs.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`DISPATCH running on http://localhost:${PORT}`);
+initDb().then(() => {
+  server.listen(PORT, () => {
+    console.log(`DISPATCH running on http://localhost:${PORT}`);
+  });
 });
