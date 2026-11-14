@@ -203,7 +203,7 @@ export function initCallManager({ getRoomId, getNickname }) {
       }
     }
     if (isInitiator && (!state.localStream || state.localStream.getVideoTracks().length === 0)) {
-      pc.addTransceiver('video', { direction: 'recvonly' });
+      pc.addTransceiver('video', { direction: 'sendrecv' });
     }
 
     pc.ontrack = (event) => {
@@ -557,8 +557,11 @@ export function initCallManager({ getRoomId, getNickname }) {
     video.playsInline = true;
     video.muted = true; // Audio is played via dedicated persistent <audio> element per peer
     if (stream) {
-      video.srcObject = stream;
-      video.play().catch(() => {});
+      const vTracks = stream.getVideoTracks();
+      video.srcObject = isSelf ? stream : (vTracks.length > 0 ? new MediaStream(vTracks) : null);
+      if (video.srcObject) {
+        video.play().catch(() => {});
+      }
     }
     tile.appendChild(video);
 
