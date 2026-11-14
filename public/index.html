@@ -100,9 +100,47 @@
             </div>
           </div>
           <div class="chat-header-right">
+            <button type="button" class="header-pill-btn call-action-btn" id="startVoiceCallBtn" title="음성 통화 시작">📞 음성</button>
+            <button type="button" class="header-pill-btn call-action-btn" id="startVideoCallBtn" title="영상 통화 시작">📹 영상</button>
             <button type="button" class="header-pill-btn" id="copyInviteBtn">초대 링크 복사</button>
           </div>
         </header>
+
+        <!-- Active Call Banner (when others are in a call) -->
+        <div class="call-banner" id="callBanner" hidden>
+          <div class="call-banner-info">
+            <span class="call-live-dot"></span>
+            <span id="callBannerText">통화가 진행 중입니다</span>
+          </div>
+          <div class="call-banner-actions">
+            <button type="button" class="call-join-btn" id="joinBannerVoiceBtn">📞 음성 참여</button>
+            <button type="button" class="call-join-btn is-video" id="joinBannerVideoBtn">📹 영상 참여</button>
+          </div>
+        </div>
+
+        <!-- Active Call Stage -->
+        <section class="call-stage" id="callStage" hidden>
+          <div class="call-stage-head">
+            <div class="call-stage-meta">
+              <span class="call-live-dot"></span>
+              <strong id="callStageTitle">통화 중</strong>
+              <span class="call-timer" id="callTimer">00:00</span>
+              <span class="call-peer-count" id="callPeerCount">1명</span>
+            </div>
+            <div class="call-stage-head-actions">
+              <button type="button" class="call-mini-btn" id="callMinimizeBtn" title="접기/펼치기">▾</button>
+            </div>
+          </div>
+
+          <div class="call-grid" id="callGrid"></div>
+
+          <div class="call-controls">
+            <button type="button" class="call-ctrl-btn is-active" id="callMicBtn" title="마이크 켜기/끄기">🎙️ 마이크</button>
+            <button type="button" class="call-ctrl-btn" id="callCamBtn" title="카메라 켜기/끄기">📷 카메라</button>
+            <button type="button" class="call-ctrl-btn" id="callScreenBtn" title="화면 공유">🖥️ 화면 공유</button>
+            <button type="button" class="call-ctrl-btn is-hangup" id="callLeaveBtn" title="통화 종료">📵 종료</button>
+          </div>
+        </section>
 
         <div class="messages-wrap" id="messagesWrap">
           <div class="messages-list" id="messagesList"></div>

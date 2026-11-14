@@ -442,6 +442,7 @@ io.on('connection', (socket) => {
     });
 
     broadcastMembers(room);
+    socket.emit('call:status', getCallStatus(room.id));
   });
 
   socket.on('profile:update', (payload = {}, ack) => {
@@ -561,22 +562,46 @@ io.on('connection', (socket) => {
 });
 
 // =========================================================
-// WebRTC Signaling Namespace (/call) for KINECTA Call
+// WebRTC Signaling Namespace (/call) for DISPATCH Call
 // =========================================================
 const callRooms = new Map(); // roomId -> Map<socketId, { socketId, nickname, micEnabled, camEnabled }>
 const callNs = io.of('/call');
+
+function getCallStatus(roomId) {
+  const members = callRooms.get(roomId);
+  const participants = members
+    ? Array.from(members.values()).map((m) => ({
+        socketId: m.socketId,
+        nickname: m.nickname,
+        micEnabled: m.micEnabled,
+        camEnabled: m.camEnabled,
+      }))
+    : [];
+  return {
+    roomId,
+    activeCount: participants.length,
+    participants,
+  };
+}
+
+function broadcastCallStatus(roomId) {
+  if (!roomId) return;
+  io.to(roomId).emit('call:status', getCallStatus(roomId));
+}
 
 callNs.on('connection', (socket) => {
   let joinedRoom = null;
 
   function leaveCurrentRoom() {
     if (!joinedRoom || !callRooms.has(joinedRoom)) return;
-    const members = callRooms.get(joinedRoom);
+    const roomId = joinedRoom;
+    const members = callRooms.get(roomId);
     members.delete(socket.id);
-    socket.to(joinedRoom).emit('call:peer-left', { socketId: socket.id });
-    socket.leave(joinedRoom);
-    if (members.size === 0) callRooms.delete(joinedRoom);
+    socket.to(roomId).emit('call:peer-left', { socketId: socket.id });
+    socket.leave(roomId);
+    if (members.size === 0) callRooms.delete(roomId);
     joinedRoom = null;
+    broadcastCallStatus(roomId);
   }
 
   socket.on('call:join', (payload = {}) => {
@@ -599,6 +624,7 @@ callNs.on('connection', (socket) => {
 
     socket.emit('call:peers', { roomId, peers: existingPeers });
     socket.to(roomId).emit('call:peer-joined', selfInfo);
+    broadcastCallStatus(roomId);
   });
 
   socket.on('call:signal', (payload = {}) => {

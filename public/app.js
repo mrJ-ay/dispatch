@@ -1,3 +1,5 @@
+import { initCallManager } from '/call.js';
+
 (() => {
   'use strict';
 
@@ -920,6 +922,10 @@
       renderRoomHeader();
     });
 
+    socket.on('call:status', (payload) => {
+      callManager.handleCallStatus(payload);
+    });
+
     socket.on('chat:message', (msg) => {
       if (!state.currentRoom) return;
       appendMessage(msg);
@@ -990,6 +996,7 @@
           setReply(null);
 
           upsertSavedRoom(state.currentRoom);
+          callManager.handleRoomChange(state.currentRoom.roomId);
           el.chatWelcome.hidden = true;
           el.chatActive.hidden = false;
           document.body.classList.add('mobile-in-chat');
@@ -1468,6 +1475,11 @@
       openModal('join', { roomId: inviteRoom.trim() });
     }
   }
+
+  const callManager = initCallManager({
+    getRoomId: () => state.currentRoom?.roomId || null,
+    getNickname: () => state.me?.nickname || state.nickname || state.user?.nickname || '익명',
+  });
 
   init();
 })();
