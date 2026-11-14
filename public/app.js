@@ -694,6 +694,7 @@ import { initCallManager } from '/call.js';
     const s = msg?.sender || {};
     return {
       socketId: s.socketId || msg?.socketId || null,
+      clientId: s.clientId || msg?.clientId || null,
       userId: s.userId || msg?.userId || null,
       nickname: s.nickname || msg?.senderName || '',
       verified: Boolean(s.verified ?? msg?.verified),
