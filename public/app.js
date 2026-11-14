@@ -602,8 +602,8 @@ import { initCallManager } from '/call.js';
           document.body.classList.add('mobile-in-chat');
           return;
         }
-        if (isAuthed && !room.hasPassword) {
-          joinRoom({ roomId: room.roomId, title: room.title });
+        if (!room.hasPassword && (isAuthed || state.nickname)) {
+          joinRoom({ roomId: room.roomId, title: room.title, nickname: state.nickname });
           return;
         }
         openModal('join', { roomId: room.roomId });
@@ -970,6 +970,18 @@ import { initCallManager } from '/call.js';
     if (state.socket) return state.socket;
     const socket = window.io({ transports: ['websocket', 'polling'] });
     state.socket = socket;
+    let hasConnectedOnce = false;
+
+    socket.on('connect', () => {
+      if (hasConnectedOnce && state.currentRoom?.roomId) {
+        joinRoom({
+          roomId: state.currentRoom.roomId,
+          title: state.currentRoom.title,
+          nickname: state.me?.nickname || state.nickname || getDisplayName(),
+        });
+      }
+      hasConnectedOnce = true;
+    });
 
     socket.on('room:members', (payload) => {
       if (!state.currentRoom || payload.roomId !== state.currentRoom.roomId) return;
@@ -1261,8 +1273,14 @@ import { initCallManager } from '/call.js';
     state.token = '';
     state.user = null;
     state.serverRooms = [];
+    state.currentRoom = null;
+    state.me = null;
     localStorage.removeItem(STORAGE_KEYS.oneidToken);
     localStorage.removeItem(STORAGE_KEYS.oneidUser);
+    callManager.leaveCall();
+    el.chatActive.hidden = true;
+    el.chatWelcome.hidden = false;
+    document.body.classList.remove('mobile-in-chat');
     renderAuthUI();
     renderRoomsList();
   }
