@@ -196,6 +196,39 @@ import { initCallManager } from '/call.js';
     }
   }
 
+  function showDesktopNotification(msg) {
+    if (!state.soundEnabled || !('Notification' in window)) return;
+    if (!document.hidden && document.hasFocus()) return;
+
+    const sender = msg?.sender?.nickname || msg?.nickname || 'DISPATCH';
+    const rawBody =
+      msg?.type === 'file'
+        ? `📎 ${msg.fileName || '파일이 도착했습니다.'}`
+        : msg?.text || msg?.content || '새 메시지가 도착했습니다.';
+    const body = String(rawBody).slice(0, 140);
+
+    const spawn = () => {
+      try {
+        const n = new Notification(sender, { body, tag: msg?.id || 'dispatch-msg' });
+        n.onclick = () => {
+          window.dispatchDesktop?.focus?.();
+          window.focus();
+          n.close();
+        };
+      } catch {}
+    };
+
+    if (Notification.permission === 'granted') {
+      spawn();
+    } else if (Notification.permission === 'default') {
+      Notification.requestPermission()
+        .then((perm) => {
+          if (perm === 'granted') spawn();
+        })
+        .catch(() => {});
+    }
+  }
+
   function getDisplayName() {
     if (state.user?.nickname) return state.user.nickname;
     if (state.user?.name) return state.user.name;
@@ -963,6 +996,7 @@ import { initCallManager } from '/call.js';
 
     if (!isMyMessage(msg) && msg.type !== 'system') {
       playChime();
+      showDesktopNotification(msg);
     }
   }
 
