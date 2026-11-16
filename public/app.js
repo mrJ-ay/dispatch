@@ -1527,32 +1527,45 @@ import { initCallManager } from '/call.js';
       if (file) uploadAndSendFile(file);
     });
 
-    el.chatActive.addEventListener('dragenter', (e) => {
-      if (!state.currentRoom) return;
+    const hasDraggedFiles = (e) => {
+      const types = e.dataTransfer?.types;
+      return types && Array.from(types).includes('Files');
+    };
+
+    document.addEventListener('dragenter', (e) => {
+      if (!hasDraggedFiles(e)) return;
       e.preventDefault();
+      if (!state.currentRoom) return;
       state.dragDepth += 1;
       el.dropOverlay.hidden = false;
     });
 
-    el.chatActive.addEventListener('dragover', (e) => {
-      if (!state.currentRoom) return;
+    document.addEventListener('dragover', (e) => {
+      if (!hasDraggedFiles(e)) return;
       e.preventDefault();
+      if (state.currentRoom && e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
     });
 
-    el.chatActive.addEventListener('dragleave', (e) => {
-      if (!state.currentRoom) return;
+    document.addEventListener('dragleave', (e) => {
+      if (!hasDraggedFiles(e)) return;
       e.preventDefault();
+      if (!state.currentRoom) return;
       state.dragDepth = Math.max(0, state.dragDepth - 1);
       if (state.dragDepth === 0) el.dropOverlay.hidden = true;
     });
 
-    el.chatActive.addEventListener('drop', (e) => {
-      if (!state.currentRoom) return;
+    document.addEventListener('drop', async (e) => {
+      if (!hasDraggedFiles(e)) return;
       e.preventDefault();
       state.dragDepth = 0;
       el.dropOverlay.hidden = true;
-      const file = e.dataTransfer?.files?.[0];
-      if (file) uploadAndSendFile(file);
+      if (!state.currentRoom) return;
+      const files = Array.from(e.dataTransfer?.files || []);
+      for (const file of files) {
+        await uploadAndSendFile(file);
+      }
     });
 
     el.lightboxClose.addEventListener('click', closeLightbox);

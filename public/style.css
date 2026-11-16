@@ -824,6 +824,7 @@ body.theme-dark .file-card {
   display: grid;
   place-items: center;
   z-index: 30;
+  pointer-events: none;
 }
 
 .drop-box {
